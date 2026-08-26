@@ -1,5 +1,5 @@
 # Built binary
-minictr
+/minictr
 
 # Go test binaries
 *.test
