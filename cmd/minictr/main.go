@@ -49,7 +49,7 @@ func run() (*exec.Cmd, error) {
 
 	// Set the SysProcAttr to create a new UTS namespace for the child process.
 	cmd.SysProcAttr = &unix.SysProcAttr{
-		Cloneflags: unix.CLONE_NEWUTS,
+		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID,
 	}
 
 	err := cmd.Start()
