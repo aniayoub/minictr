@@ -47,6 +47,11 @@ func run() (*exec.Cmd, error) {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 
+	// Set the SysProcAttr to create a new UTS namespace for the child process.
+	cmd.SysProcAttr = &unix.SysProcAttr{
+		Cloneflags: unix.CLONE_NEWUTS,
+	}
+
 	err := cmd.Start()
 
 	if err != nil {
@@ -71,7 +76,11 @@ func containerInit() error {
 
 	fmt.Println("Container init PID:", os.Getpid())
 
-	err := unix.Exec(os.Args[2], os.Args[2:], os.Environ())
+	err := unix.Sethostname([]byte("minictr"))
+	if err != nil {
+		return fmt.Errorf("error setting hostname: %v", err)
+	}
+	err = unix.Exec(os.Args[2], os.Args[2:], os.Environ())
 	if err != nil {
 		return fmt.Errorf("error executing child process with unix.Exec: %v", err)
 	}
