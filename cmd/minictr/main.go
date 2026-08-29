@@ -4,94 +4,163 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 func main() {
-
-	// Extract the requested command from the command-line arguments
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: minictr <init|run> <command> [args...]")
-		return
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: minictr <init|run> <rootfs> <command> [args...]")
+		os.Exit(1)
 	}
 
 	switch os.Args[1] {
-	case "init":
-		// If the requested command is "init", run the container initialization logic
-		err := containerInit()
-		if err != nil {
-			fmt.Println("Error initializing container:", err)
-			return
-		}
 	case "run":
-		// Run the child process with the requested command
-		_, err := run()
-		if err != nil {
-			fmt.Println("Error running child process:", err)
-			return
+		if err := run(); err != nil {
+			fmt.Println("Error running container:", err)
+			os.Exit(1)
 		}
 
-	}
+	case "init":
+		if err := containerInit(); err != nil {
+			fmt.Println("Error initializing container:", err)
+			os.Exit(1)
+		}
 
+	default:
+		fmt.Printf("Unknown command: %s\n", os.Args[1])
+		os.Exit(1)
+	}
 }
 
-func run() (*exec.Cmd, error) {
+func run() error {
 	fmt.Println("Parent Process ID:", os.Getpid())
 
-	// Create a new command to run the child process with the requested command,
-	// But this time using "init" to distinguish it from the parent process.
-	cmd := exec.Command("/proc/self/exe", append([]string{"init"}, os.Args[2:]...)...)
+	args := append([]string{"init"}, os.Args[2:]...)
 
+	cmd := exec.Command("/proc/self/exe", args...)
+
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
 
-	// Set the SysProcAttr to create a new UTS namespace for the child process.
-	cmd.SysProcAttr = &unix.SysProcAttr{
-		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUTS |
+			syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWNS,
 	}
 
-	err := cmd.Start()
-
-	if err != nil {
-		fmt.Println("Error starting child process:", err)
-		return nil, err
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start child process: %w", err)
 	}
 
 	fmt.Println("Child Process ID:", cmd.Process.Pid)
 
-	err = cmd.Wait()
-	if err != nil {
-		fmt.Println("Error waiting for child process:", err)
-		return nil, err
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("wait for child process: %w", err)
 	}
 
-	fmt.Println("New child process is created successfully.")
-
-	return cmd, nil
+	return nil
 }
 
 func containerInit() error {
-
 	fmt.Println("Container init PID:", os.Getpid())
 
-	err := unix.Sethostname([]byte("minictr"))
+	rootfs := os.Args[2]
+	command := os.Args[3]
+	commandArgs := os.Args[3:]
 
-	// Make the mount namespace private to avoid affecting the host's mount points
-	err = unix.Mount(
+	if err := setHostname("minictr"); err != nil {
+		return err
+	}
+
+	if err := makeMountsPrivate(); err != nil {
+		return err
+	}
+
+	if err := pivotRoot(rootfs); err != nil {
+		return err
+	}
+
+	if err := mountProc(); err != nil {
+		return err
+	}
+
+	return execWorkload(command, commandArgs)
+}
+
+func setHostname(hostname string) error {
+	if err := unix.Sethostname([]byte(hostname)); err != nil {
+		return fmt.Errorf("set hostname: %w", err)
+	}
+
+	return nil
+}
+
+func makeMountsPrivate() error {
+	if err := unix.Mount(
 		"",
 		"/",
 		"",
 		unix.MS_PRIVATE|unix.MS_REC,
 		"",
-	)
-
-	if err != nil {
-		return fmt.Errorf("make mount private: %v", err)
+	); err != nil {
+		return fmt.Errorf("make mounts private: %w", err)
 	}
 
-	// Mount the proc filesystem to /proc inside the container
+	return nil
+}
+
+func pivotRoot(rootfs string) error {
+	rootfs, err := filepath.Abs(rootfs)
+	if err != nil {
+		return fmt.Errorf("resolve rootfs path: %w", err)
+	}
+
+	// pivot_root requires the new root to be a mount point.
+	// Bind-mounting rootfs onto itself makes it one.
+	if err := unix.Mount(
+		rootfs,
+		rootfs,
+		"",
+		unix.MS_BIND|unix.MS_REC,
+		"",
+	); err != nil {
+		return fmt.Errorf("bind mount rootfs: %w", err)
+	}
+
+	// The kernel temporarily moves the old root here
+	// during pivot_root.
+	putOld := filepath.Join(rootfs, ".pivot_root")
+
+	if err := os.MkdirAll(putOld, 0700); err != nil {
+		return fmt.Errorf("create old-root directory: %w", err)
+	}
+
+	if err := unix.PivotRoot(rootfs, putOld); err != nil {
+		return fmt.Errorf("pivot root: %w", err)
+	}
+
+	// We are now inside the new root filesystem.
+	if err := unix.Chdir("/"); err != nil {
+		return fmt.Errorf("chdir to new root: %w", err)
+	}
+
+	// Remove access to the old host root.
+	if err := unix.Unmount("/.pivot_root", unix.MNT_DETACH); err != nil {
+		return fmt.Errorf("unmount old root: %w", err)
+	}
+
+	if err := os.Remove("/.pivot_root"); err != nil {
+		return fmt.Errorf("remove old-root directory: %w", err)
+	}
+
+	return nil
+}
+
+func mountProc() error {
 	if err := unix.Mount(
 		"proc",
 		"/proc",
@@ -102,12 +171,13 @@ func containerInit() error {
 		return fmt.Errorf("mount proc: %w", err)
 	}
 
-	if err != nil {
-		return fmt.Errorf("error setting hostname: %v", err)
-	}
-	err = unix.Exec(os.Args[2], os.Args[2:], os.Environ())
-	if err != nil {
-		return fmt.Errorf("error executing child process with unix.Exec: %v", err)
+	return nil
+}
+
+func execWorkload(command string, args []string) error {
+	// If Exec succeeds, this function never returns.
+	if err := unix.Exec(command, args, os.Environ()); err != nil {
+		return fmt.Errorf("exec workload: %w", err)
 	}
 
 	return nil

@@ -16,3 +16,6 @@ coverage.out
 
 # OS files
 .DS_Store
+
+# Process root filesystem
+rootfs/
