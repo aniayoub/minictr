@@ -49,7 +49,7 @@ func run() (*exec.Cmd, error) {
 
 	// Set the SysProcAttr to create a new UTS namespace for the child process.
 	cmd.SysProcAttr = &unix.SysProcAttr{
-		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID,
+		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
 	}
 
 	err := cmd.Start()
@@ -77,6 +77,31 @@ func containerInit() error {
 	fmt.Println("Container init PID:", os.Getpid())
 
 	err := unix.Sethostname([]byte("minictr"))
+
+	// Make the mount namespace private to avoid affecting the host's mount points
+	err = unix.Mount(
+		"",
+		"/",
+		"",
+		unix.MS_PRIVATE|unix.MS_REC,
+		"",
+	)
+
+	if err != nil {
+		return fmt.Errorf("make mount private: %v", err)
+	}
+
+	// Mount the proc filesystem to /proc inside the container
+	if err := unix.Mount(
+		"proc",
+		"/proc",
+		"proc",
+		0,
+		"",
+	); err != nil {
+		return fmt.Errorf("mount proc: %w", err)
+	}
+
 	if err != nil {
 		return fmt.Errorf("error setting hostname: %v", err)
 	}
