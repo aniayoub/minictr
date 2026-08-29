@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	Hostname string
-	Rootfs   string
-	Command  []string
+	Hostname   string
+	Rootfs     string
+	Command    []string
+	BindMounts []BindMount
 }
 
 func Parse(args []string) (*Config, error) {
@@ -50,6 +51,12 @@ func Parse(args []string) (*Config, error) {
 		"hostname",
 		"minictr",
 		"Container hostname",
+	)
+
+	flags.Var(
+		(*bindMountFlag)(&config.BindMounts),
+		"bind",
+		"Bind mount in the format source:target",
 	)
 
 	if err := flags.Parse(runtimeArgs); err != nil {

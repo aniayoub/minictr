@@ -13,6 +13,7 @@ This project is useful as Linux systems practice because it works directly with 
 - process bootstrap with re-exec
 - namespace creation via `clone` flags
 - mount namespace behavior and propagation control
+- bind mount preparation and host-to-container path mapping
 - root filesystem switching with `pivot_root`
 - procfs setup inside an isolated filesystem view
 - process replacement through `exec`
@@ -22,7 +23,7 @@ This project is useful as Linux systems practice because it works directly with 
 Running:
 
 ```bash
-sudo ./minictr run ./rootfs --hostname demo -- /bin/sh
+sudo ./minictr run ./rootfs --hostname demo --bind "$PWD":/workspace -- /bin/sh
 ```
 
 creates this sequence:
@@ -30,7 +31,7 @@ creates this sequence:
 ```text
 Process A
 
-./minictr run ./rootfs --hostname demo -- /bin/sh
+./minictr run ./rootfs --hostname demo --bind "$PWD":/workspace -- /bin/sh
 host PID 5000
 
         |
@@ -39,11 +40,12 @@ host PID 5000
 
 Process B
 
-/proc/self/exe init ./rootfs --hostname demo -- /bin/sh
+/proc/self/exe init ./rootfs --hostname demo --bind "$PWD":/workspace -- /bin/sh
 host PID 5001
 
         |
         | sethostname()
+        | mountBinds()
         | make mounts private
         | pivot_root()
         | mount /proc
@@ -68,12 +70,21 @@ minictr run <rootfs> [runtime-options] -- <command> [command-args...]
 Example:
 
 ```bash
-sudo ./minictr run ./rootfs --hostname minictr -- /bin/echo Hi
+sudo ./minictr run ./rootfs --hostname minictr --bind /home/bee/data:/data -- /bin/echo Hi
 ```
 
 The `--` separator is required so runtime flags can be distinguished from the workload command and its arguments.
 
 The same parser is reused when `init` runs, so the child receives the same rootfs, runtime flags, and workload arguments.
+
+Supported runtime flags currently include:
+
+- `--hostname <name>`
+- `--bind <source>:<target>`
+
+`--bind` may be provided multiple times.
+
+The bind-mount parser rejects invalid values early. The flag must contain a colon, both source and target must be non-empty, and the target must later resolve to an absolute container path.
 
 ## What `run` Does
 
@@ -98,15 +109,21 @@ Standard input, output, and error are inherited from the parent so interactive c
 Inside the child process, `init` parses the rootfs path, runtime flags, and command, then performs container setup in this order:
 
 1. set the container hostname
-2. mark mounts as private with `MS_PRIVATE | MS_REC`
-3. bind-mount the rootfs onto itself so it becomes a mount point
-4. call `pivot_root`
-5. change directory to `/`
-6. unmount and remove the old root
-7. mount `proc` at `/proc`
-8. replace the init process with the requested workload using `unix.Exec()`
+2. resolve each bind source to an absolute host path
+3. clean each bind target and verify it is absolute inside the container
+4. create the bind target directory under the selected rootfs
+5. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
+6. mark mounts as private with `MS_PRIVATE | MS_REC`
+7. bind-mount the rootfs onto itself so it becomes a mount point
+8. call `pivot_root`
+9. change directory to `/`
+10. unmount and remove the old root
+11. mount `proc` at `/proc`
+12. replace the init process with the requested workload using `unix.Exec()`
 
-That ordering matters because `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+That ordering matters because the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+
+For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
 
 ## Why Re-exec Still Matters
 
@@ -137,6 +154,7 @@ The current code already provides:
 - PID namespace creation
 - mount namespace creation
 - configurable hostname
+- repeated bind mounts with `--bind source:target`
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem
 - final workload replacement through `unix.Exec()`
@@ -181,6 +199,5 @@ That distinction is fundamental to Linux process control: the kernel swaps the r
 The current code has already moved past the original Stage 1 milestone. The next meaningful additions are:
 
 - cgroups v2 for memory and process limits
-- bind mounts for exposing selected host paths
 - user namespaces for safer isolation
 - network namespaces for connectivity control

@@ -5,6 +5,7 @@ import (
 	"minictr/internal/config"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,6 +18,10 @@ func Init(config *config.Config) error {
 	commandArgs := config.Command[0:]
 
 	if err := setHostname(config.Hostname); err != nil {
+		return err
+	}
+
+	if err := mountBinds(rootfs, config.BindMounts); err != nil {
 		return err
 	}
 
@@ -42,6 +47,44 @@ func setHostname(hostname string) error {
 
 	fmt.Println("Hostname set to:", hostname)
 
+	return nil
+}
+
+func mountBinds(rootfs string, bindMounts []config.BindMount) error {
+	fmt.Println("Mounting bind mounts:", bindMounts)
+	for _, bind := range bindMounts {
+		source, err := filepath.Abs(bind.Source)
+		if err != nil {
+			return fmt.Errorf("resolve source path: %w", err)
+		}
+
+		target := filepath.Clean(bind.Target)
+
+		if !filepath.IsAbs(target) {
+			return fmt.Errorf("target path must be absolute: %s", target)
+		}
+
+		// /data -> /rootfs/data
+		hostTarget := filepath.Join(
+			rootfs,
+			strings.TrimPrefix(target, "/"),
+		)
+
+		if err := os.MkdirAll(hostTarget, 0755); err != nil {
+			return fmt.Errorf("create target directory: %w", err)
+		}
+
+		if err := unix.Mount(
+			source,
+			hostTarget,
+			"",
+			unix.MS_BIND|unix.MS_REC,
+			"",
+		); err != nil {
+			return fmt.Errorf("bind mount %s to %s: %w", source, hostTarget, err)
+		}
+
+	}
 	return nil
 }
 

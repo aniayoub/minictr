@@ -31,11 +31,21 @@ go build -o minictr ./cmd/minictr
 sudo ./minictr run ./rootfs --hostname demo -- /bin/echo Hi
 ```
 
+Example with a bind mount:
+
+```bash
+sudo ./minictr run ./rootfs \
+      --hostname demo \
+      --bind "$PWD":/workspace \
+      -- /bin/sh
+```
+
 What is implemented now:
 
 - parent process re-execs the current binary in `init` mode
 - child runs in new UTS, PID, and mount namespaces
 - container hostname is configurable with `--hostname`
+- host paths can be bind-mounted into the container with repeated `--bind source:target` flags
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
 - `init` replaces itself with the requested workload using `unix.Exec()`
@@ -45,6 +55,7 @@ What this demonstrates:
 - practical use of Linux namespace flags from Go
 - understanding of the difference between process creation and process replacement
 - direct control over mount propagation and root filesystem transitions
+- explicit host-to-container filesystem mapping through bind mounts
 - hands-on knowledge of how container bootstrap code prepares an isolated runtime environment
 
 Current constraints:
@@ -67,6 +78,8 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
            /proc/self/exe init <rootfs> [runtime-options] -- <command> [args...]
                        |
                        +-- set hostname
+                       +-- create bind-mount targets under rootfs
+                       +-- bind mount host paths into rootfs
                        +-- make mounts private
                        +-- pivot_root into rootfs
                        +-- mount /proc
@@ -87,9 +100,28 @@ The CLI now expects a root filesystem followed by runtime flags and a `--` separ
 sudo ./minictr run ./rootfs --hostname minictr -- /bin/sh
 ```
 
+Supported runtime flags currently include:
+
+- `--hostname <name>` to set the container hostname
+- `--bind <source>:<target>` to bind-mount a host path into an absolute path inside the container
+
+`--bind` may be provided more than once.
+
+Example:
+
+```bash
+sudo ./minictr run ./rootfs \
+      --hostname minictr \
+      --bind /home/bee/data:/data \
+      --bind /home/bee/src:/workspace \
+      -- /bin/sh
+```
+
 The same parser is used by both `run` and `init`, which keeps the bootstrap path aligned across the parent and child processes.
 
 That design keeps the runtime honest: the child path does not rely on hidden global state and instead reconstructs container state from explicit arguments.
+
+Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
 
 ## Next Stage
 
@@ -98,7 +130,6 @@ The next useful milestones are resource control and broader isolation beyond the
 Practical targets from here:
 
 - cgroups v2 for memory and PID limits
-- bind mounts for controlled filesystem exposure
 - user namespaces for safer unprivileged execution paths
 - network namespaces for interface isolation
 
@@ -127,7 +158,7 @@ Stage 2  UTS namespace                      DONE
 Stage 3  PID namespace                      DONE
 Stage 4  Mount namespace + /proc            DONE
 Stage 5  pivot_root                         DONE
-Stage 6  Bind mounts                        PARTIAL
+Stage 6  Bind mounts                        DONE
 Stage 7  cgroups v2                         NEXT
 Stage 8  Signals and lifecycle management
 Stage 9  User namespaces
