@@ -21,11 +21,11 @@ func Init(config *config.Config) error {
 		return err
 	}
 
-	if err := mountBinds(rootfs, config.BindMounts); err != nil {
+	if err := makeMountsPrivate(); err != nil {
 		return err
 	}
 
-	if err := makeMountsPrivate(); err != nil {
+	if err := mountBinds(rootfs, config.BindMounts); err != nil {
 		return err
 	}
 

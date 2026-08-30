@@ -93,9 +93,9 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
            /proc/self/exe init <rootfs> [runtime-options] -- <command> [args...]
                        |
                        +-- set hostname
+                       +-- make mounts private
                        +-- create bind-mount targets under rootfs
                        +-- bind mount host paths into rootfs
-                       +-- make mounts private
                        +-- pivot_root into rootfs
                        +-- mount /proc
                        |

@@ -49,8 +49,8 @@ host PID 5001
 
         |
         | sethostname()
-        | mountBinds()
         | make mounts private
+        | mountBinds()
         | pivot_root()
         | mount /proc
         | unix.Exec(...)
@@ -124,11 +124,11 @@ After `Start()`, the parent adds the child PID to the cgroup, waits for the work
 Inside the child process, `init` receives the already-parsed config and performs container setup in this order:
 
 1. set the container hostname
-2. resolve each bind source to an absolute host path
-3. clean each bind target and verify it is absolute inside the container
-4. create the bind target directory under the selected rootfs
-5. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
-6. mark mounts as private with `MS_PRIVATE | MS_REC`
+2. mark mounts as private with `MS_PRIVATE | MS_REC`
+3. resolve each bind source to an absolute host path
+4. clean each bind target and verify it is absolute inside the container
+5. create the bind target directory under the selected rootfs
+6. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
 7. bind-mount the rootfs onto itself so it becomes a mount point
 8. call `pivot_root`
 9. change directory to `/`
@@ -136,7 +136,7 @@ Inside the child process, `init` receives the already-parsed config and performs
 11. mount `proc` at `/proc`
 12. replace the init process with the requested workload using `unix.Exec()`
 
-That ordering matters because the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+That ordering matters because mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
 
 For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
 
