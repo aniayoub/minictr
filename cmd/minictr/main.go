@@ -14,23 +14,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// We pass the arguments starting the rootfs to the config parser.
+	// The first 2 arguments usage is scoped to the main function itself.
+	config, err := config.Parse(os.Args[2:])
+
+	if err != nil {
+		fmt.Println("Error parsing config:", err)
+		os.Exit(1)
+	}
+
 	switch os.Args[1] {
 	case "run":
-		if err := runtime.Run(os.Args[2:]); err != nil {
+		if err := runtime.Run(os.Args[2:], config); err != nil {
 			fmt.Println("Error running container:", err)
 			os.Exit(1)
 		}
 
 	case "init":
-
-		// We pass the arguments starting the rootfs to the config parser.
-		// The first 2 arguments usage is scoped to the main function itself.
-		config, err := config.Parse(os.Args[2:])
-
-		if err != nil {
-			fmt.Println("Error parsing config:", err)
-			os.Exit(1)
-		}
 
 		if err := container.Init(config); err != nil {
 			fmt.Println("Error initializing container:", err)

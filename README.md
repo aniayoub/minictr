@@ -22,7 +22,7 @@ The current implementation is intentionally close to the kernel-facing mechanics
 
 ## Current Status
 
-The current codebase can launch a process inside a minimal container-like environment built from Linux namespaces and a prepared root filesystem.
+The current codebase can launch a process inside a minimal container-like environment built from Linux namespaces, a prepared root filesystem, and cgroups v2 resource controls.
 
 Current behavior:
 
@@ -40,12 +40,24 @@ sudo ./minictr run ./rootfs \
       -- /bin/sh
 ```
 
+Example with resource limits:
+
+```bash
+sudo ./minictr run ./rootfs \
+      --hostname demo \
+      --pids 64 \
+      --memory 256M \
+      --cpu 0.5 \
+      -- /bin/sh
+```
+
 What is implemented now:
 
 - parent process re-execs the current binary in `init` mode
 - child runs in new UTS, PID, and mount namespaces
 - container hostname is configurable with `--hostname`
 - host paths can be bind-mounted into the container with repeated `--bind source:target` flags
+- cgroups v2 limits can be applied for PID count, memory, and CPU quota
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
 - `init` replaces itself with the requested workload using `unix.Exec()`
@@ -53,6 +65,7 @@ What is implemented now:
 What this demonstrates:
 
 - practical use of Linux namespace flags from Go
+- direct cgroup v2 manipulation through `pids.max`, `memory.max`, and `cpu.max`
 - understanding of the difference between process creation and process replacement
 - direct control over mount propagation and root filesystem transitions
 - explicit host-to-container filesystem mapping through bind mounts
@@ -62,7 +75,7 @@ Current constraints:
 
 - requires Linux and root privileges
 - expects a usable root filesystem that already contains the requested command
-- no cgroup-based resource limits yet
+- expects cgroup v2 to be available and writable under `/sys/fs/cgroup`
 - no user namespace isolation yet
 - no network namespace isolation yet
 - no OCI bundle or image support yet
@@ -74,6 +87,8 @@ The current execution model is:
 ```text
 minictr run <rootfs> [runtime-options] -- <command> [args...]
                        |
+                       +-- parse runtime config once in main
+                       +-- create cgroup and apply resource limits
                        v
            /proc/self/exe init <rootfs> [runtime-options] -- <command> [args...]
                        |
@@ -88,7 +103,7 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                  target process
 ```
 
-The important design choice is that `init` gets a chance to perform setup before the target command starts. That setup now includes namespace-backed isolation and filesystem activation, and it is the place where later features such as cgroups or additional namespaces can be added.
+The important design choice is that `run` prepares shared runtime state such as config and cgroups before the child starts, while `init` gets a chance to perform container-specific setup before the target command starts. That setup includes namespace-backed isolation and filesystem activation, and it is the place where later features such as additional namespaces can be added.
 
 This mirrors a real container-runtime concern: the bootstrap process has to mutate kernel-visible process state before handing control to the workload.
 
@@ -104,6 +119,9 @@ Supported runtime flags currently include:
 
 - `--hostname <name>` to set the container hostname
 - `--bind <source>:<target>` to bind-mount a host path into an absolute path inside the container
+- `--pids <count>` to set `pids.max`
+- `--memory <bytes|K|M|G>` to set `memory.max`
+- `--cpu <quota>` to set `cpu.max` relative to the runtime time unit
 
 `--bind` may be provided more than once.
 
@@ -114,24 +132,29 @@ sudo ./minictr run ./rootfs \
       --hostname minictr \
       --bind /home/bee/data:/data \
       --bind /home/bee/src:/workspace \
+      --pids 64 \
+      --memory 512M \
+      --cpu 0.5 \
       -- /bin/sh
 ```
 
-The same parser is used by both `run` and `init`, which keeps the bootstrap path aligned across the parent and child processes.
+The config parser runs once in `main()` before dispatching to `run` or `init`, so both code paths operate on the same parsed runtime configuration.
 
-That design keeps the runtime honest: the child path does not rely on hidden global state and instead reconstructs container state from explicit arguments.
+That design keeps the runtime honest: the child path does not rely on hidden global state, and the parent can apply resource controls before the child starts running the workload.
 
 Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
 
+Resource limits are applied through a dedicated cgroup created under `/sys/fs/cgroup`, the child PID is added after `Start()`, and the cgroup is removed after the workload exits.
+
 ## Next Stage
 
-The next useful milestones are resource control and broader isolation beyond the current bootstrap path.
+The next useful milestones are broader isolation and runtime hardening beyond the current bootstrap path.
 
 Practical targets from here:
 
-- cgroups v2 for memory and PID limits
 - user namespaces for safer unprivileged execution paths
 - network namespaces for interface isolation
+- stronger lifecycle and cleanup handling around mounted resources
 
 ## Long-Term Goal
 
@@ -159,7 +182,7 @@ Stage 3  PID namespace                      DONE
 Stage 4  Mount namespace + /proc            DONE
 Stage 5  pivot_root                         DONE
 Stage 6  Bind mounts                        DONE
-Stage 7  cgroups v2                         NEXT
+Stage 7  cgroups v2                         DONE
 Stage 8  Signals and lifecycle management
 Stage 9  User namespaces
 Stage 10 Network namespaces
