@@ -4,11 +4,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
-const CpuDefaultTimeUnit = 100_000
+const CPUPeriodMicros int64 = 100_000
 
 type Config struct {
 	// Command to execute inside the container
@@ -19,9 +20,9 @@ type Config struct {
 	Rootfs     string
 	BindMounts []BindMount
 
-	PidsMax   int
+	PidsMax   int64
 	MemoryMax int64
-	CpuMax    int
+	CpuMax    int64
 }
 
 func Parse(args []string) (*Config, error) {
@@ -94,7 +95,7 @@ func (c *Config) parseRuntimeOptions(args []string, separatorIndex int) error {
 	)
 
 	// Parse pids max
-	flags.IntVar(
+	flags.Int64Var(
 		&c.PidsMax,
 		"pids",
 		0,
@@ -116,7 +117,7 @@ func (c *Config) parseRuntimeOptions(args []string, separatorIndex int) error {
 		&cpuMax,
 		"cpu",
 		float64(0),
-		"Maximum CPU time in microseconds",
+		"Maximum CPU allocation, e.g. 0.5, 1, 2",
 	)
 
 	if err := flags.Parse(runtimeArgs); err != nil {
@@ -132,7 +133,11 @@ func (c *Config) parseRuntimeOptions(args []string, separatorIndex int) error {
 	}
 
 	if cpuMax > 0 {
-		c.CpuMax = int(cpuMax * CpuDefaultTimeUnit)
+		c.CpuMax = int64(math.Round(cpuMax * float64(CPUPeriodMicros)))
+	}
+
+	if err := c.validateConfig(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	return nil
@@ -160,5 +165,35 @@ func parseBytes(valueAdr *string) (int64, error) {
 		return 0, fmt.Errorf("invalid memory value: %w", err)
 	}
 
+	// Make sure the parsed number does not cause an over flow before return
+	if n > math.MaxInt64/multiplier {
+		return 0, fmt.Errorf("memory value too large")
+	}
+
 	return n * multiplier, nil
+}
+
+func (c *Config) validateConfig() error {
+	if c.Rootfs == "" {
+		return fmt.Errorf("rootfs is required")
+	}
+
+	if len(c.Command) == 0 {
+		return fmt.Errorf("command is required")
+	}
+
+	// Check positive values for resource limits
+	if c.PidsMax < 0 {
+		return fmt.Errorf("pids max must be positive")
+	}
+
+	if c.MemoryMax < 0 {
+		return fmt.Errorf("memory max must be positive")
+	}
+
+	if c.CpuMax < 0 {
+		return fmt.Errorf("cpu max must be positive")
+	}
+
+	return nil
 }

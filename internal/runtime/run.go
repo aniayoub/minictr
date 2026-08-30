@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"minictr/internal/cgroup"
 	"minictr/internal/config"
@@ -9,7 +10,7 @@ import (
 	"syscall"
 )
 
-func Run(runWith []string, cfg *config.Config) error {
+func Run(runWith []string, cfg *config.Config) (retErr error) {
 	fmt.Println("Parent Process ID:", os.Getpid())
 
 	args := append([]string{"init"}, runWith...)
@@ -17,20 +18,21 @@ func Run(runWith []string, cfg *config.Config) error {
 	cmd := createCommand(args)
 
 	cg, err := createCgroup(cfg)
+
 	if err != nil {
 		return err
 	}
 
-	defer cg.Remove()
+	defer func() {
+		if cleanupErr := cg.Remove(); cleanupErr != nil {
+			retErr = errors.Join(retErr, cleanupErr)
+		}
+	}()
 
-	if err := runCommand(cmd, cg); err != nil {
-		return err
-	}
-
-	return nil
+	return runCommand(cmd, cg)
 }
 
-func createCgroup(cfg *config.Config) (*cgroup.Cgroup, error) {
+func createCgroup(cfg *config.Config) (cg *cgroup.Cgroup, retErr error) {
 	// Create a Cgroup to limit execution resources
 	cg, err := cgroup.Create(
 		fmt.Sprintf("minictr-%d", os.Getpid()),
@@ -40,23 +42,33 @@ func createCgroup(cfg *config.Config) (*cgroup.Cgroup, error) {
 		return nil, err
 	}
 
+	// If anything below fails, creation was incomplete,
+	// so remove the cgroup before returning.
+	defer func() {
+		if retErr != nil {
+			if cleanupErr := cg.Remove(); cleanupErr != nil {
+				retErr = errors.Join(retErr, cleanupErr)
+			}
+		}
+	}()
+
 	if cfg.PidsMax > 0 {
 		err = cg.SetPidsMax(cfg.PidsMax)
 		if err != nil {
-			return nil, fmt.Errorf("set pids.max: %w", err)
+			return cg, fmt.Errorf("set pids.max: %w", err)
 		}
 	}
 
 	if cfg.MemoryMax > 0 {
 		err = cg.SetMemoryMax(cfg.MemoryMax)
 		if err != nil {
-			return nil, fmt.Errorf("set memory.max: %w", err)
+			return cg, fmt.Errorf("set memory.max: %w", err)
 		}
 	}
 	if cfg.CpuMax > 0 {
 		err = cg.SetCpuMax(cfg.CpuMax)
 		if err != nil {
-			return nil, fmt.Errorf("set cpu.max: %w", err)
+			return cg, fmt.Errorf("set cpu.max: %w", err)
 		}
 	}
 

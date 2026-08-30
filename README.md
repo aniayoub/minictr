@@ -121,7 +121,7 @@ Supported runtime flags currently include:
 - `--bind <source>:<target>` to bind-mount a host path into an absolute path inside the container
 - `--pids <count>` to set `pids.max`
 - `--memory <bytes|K|M|G>` to set `memory.max`
-- `--cpu <quota>` to set `cpu.max` relative to the runtime time unit
+- `--cpu <cpus>` to set `cpu.max` relative to the runtime time unit
 
 `--bind` may be provided more than once.
 

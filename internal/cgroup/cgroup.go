@@ -24,12 +24,12 @@ func Create(name string) (*Cgroup, error) {
 	return &Cgroup{Path: path}, nil
 }
 
-func (c *Cgroup) SetPidsMax(max int) error {
+func (c *Cgroup) SetPidsMax(max int64) error {
 	path := filepath.Join(c.Path, "pids.max")
 
 	if err := os.WriteFile(
 		path,
-		[]byte(strconv.Itoa(max)),
+		[]byte(strconv.FormatInt(max, 10)),
 		0644,
 	); err != nil {
 		return fmt.Errorf("set pids.max: %w", err)
@@ -52,12 +52,12 @@ func (c *Cgroup) SetMemoryMax(bytes int64) error {
 	return nil
 }
 
-func (c *Cgroup) SetCpuMax(max int) error {
+func (c *Cgroup) SetCpuMax(max int64) error {
 	path := filepath.Join(c.Path, "cpu.max")
 
 	if err := os.WriteFile(
 		path,
-		[]byte(strconv.Itoa(max)+" "+strconv.Itoa(config.CpuDefaultTimeUnit)),
+		[]byte(strconv.FormatInt(max, 10)+" "+strconv.FormatInt(config.CPUPeriodMicros, 10)),
 		0644,
 	); err != nil {
 		return fmt.Errorf("set cpu.max: %w", err)
