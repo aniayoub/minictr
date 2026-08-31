@@ -129,11 +129,24 @@ func (c *Config) parseRuntimeOptions(args []string, separatorIndex int) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse memory max: %w", err)
 		}
+
+		if memoryMax < 0 {
+			return fmt.Errorf("memory max must be positive")
+		}
+
 		c.MemoryMax = memoryMax
 	}
 
 	if cpuMax > 0 {
 		c.CpuMax = int64(math.Round(cpuMax * float64(CPUPeriodMicros)))
+	}
+
+	if cpuMax < 0 {
+		return fmt.Errorf("cpu max must be positive")
+	}
+
+	if c.PidsMax < 0 {
+		return fmt.Errorf("pids max must be positive")
 	}
 
 	if err := c.validateConfig(); err != nil {
@@ -181,19 +194,6 @@ func (c *Config) validateConfig() error {
 	if len(c.Command) == 0 {
 		return fmt.Errorf("command is required")
 	}
-
-	// Check positive values for resource limits
-	if c.PidsMax < 0 {
-		return fmt.Errorf("pids max must be positive")
-	}
-
-	if c.MemoryMax < 0 {
-		return fmt.Errorf("memory max must be positive")
-	}
-
-	if c.CpuMax < 0 {
-		return fmt.Errorf("cpu max must be positive")
-	}
-
 	return nil
+
 }
