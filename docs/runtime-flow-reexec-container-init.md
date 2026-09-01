@@ -12,6 +12,7 @@ This project is useful as Linux systems practice because it works directly with 
 
 - process bootstrap with re-exec
 - cgroup v2 setup and process membership management
+- Unix signal forwarding from the runtime to the child process
 - namespace creation via `clone` flags
 - mount namespace behavior and propagation control
 - bind mount preparation and host-to-container path mapping
@@ -40,6 +41,8 @@ host PID 5000
         | create cgroup
         | write pids.max / memory.max / cpu.max
         | exec.Command("/proc/self/exe", ...)
+        | add child to cgroup
+        | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         v
 
 Process B
@@ -95,6 +98,8 @@ The bind-mount parser rejects invalid values early. The flag must contain a colo
 
 The memory flag accepts raw bytes or `K`, `M`, and `G` suffixes. The CPU flag is converted into the runtime's internal cgroup time unit before being written to `cpu.max`.
 
+Validation is performed before runtime startup. Negative values for `--pids`, `--memory`, and `--cpu` are rejected, and oversized memory values are rejected during parsing.
+
 ## What `run` Does
 
 The parent process uses Go's `exec.Command(...)` to launch another copy of the current binary through `/proc/self/exe`.
@@ -117,7 +122,9 @@ This gives the child:
 
 Standard input, output, and error are inherited from the parent so interactive commands still work.
 
-After `Start()`, the parent adds the child PID to the cgroup, waits for the workload to exit, and removes the cgroup on cleanup.
+After `Start()`, the parent adds the child PID to the cgroup, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for the workload to exit, and removes the cgroup on cleanup.
+
+If cgroup membership fails after the child has been started, the runtime kills the child process and waits for it before returning the error.
 
 ## What `init` Does
 
@@ -171,6 +178,7 @@ The current code already provides:
 - configurable hostname
 - repeated bind mounts with `--bind source:target`
 - cgroup v2 resource limits for PID count, memory, and CPU quota
+- forwarding of common Linux termination signals from parent to child
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem
 - final workload replacement through `unix.Exec()`
@@ -216,4 +224,4 @@ The current code has already moved past the original Stage 1 milestone. The next
 
 - user namespaces for safer isolation
 - network namespaces for connectivity control
-- stronger signal forwarding and lifecycle management
+- more complete signal forwarding and lifecycle management across child processes

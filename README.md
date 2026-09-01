@@ -58,6 +58,7 @@ What is implemented now:
 - container hostname is configurable with `--hostname`
 - host paths can be bind-mounted into the container with repeated `--bind source:target` flags
 - cgroups v2 limits can be applied for PID count, memory, and CPU quota
+- common Linux termination signals are forwarded from the parent runtime to the child process
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
 - `init` replaces itself with the requested workload using `unix.Exec()`
@@ -66,6 +67,7 @@ What this demonstrates:
 
 - practical use of Linux namespace flags from Go
 - direct cgroup v2 manipulation through `pids.max`, `memory.max`, and `cpu.max`
+- basic Unix signal handling and forwarding in a parent/child runtime model
 - understanding of the difference between process creation and process replacement
 - direct control over mount propagation and root filesystem transitions
 - explicit host-to-container filesystem mapping through bind mounts
@@ -89,6 +91,7 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                        |
                        +-- parse runtime config once in main
                        +-- create cgroup and apply resource limits
+                       +-- start child, join it to cgroup, and forward signals
                        v
            /proc/self/exe init <rootfs> [runtime-options] -- <command> [args...]
                        |
@@ -146,6 +149,8 @@ Bind mount validation is strict: the flag value must be in `source:target` forma
 
 Resource limits are applied through a dedicated cgroup created under `/sys/fs/cgroup`, the child PID is added after `Start()`, and the cgroup is removed after the workload exits.
 
+Runtime flag validation is also enforced before startup: `--bind` must be valid `source:target`, bind targets must be absolute container paths, and `--pids`, `--memory`, and `--cpu` must not be negative. The memory parser accepts `K`, `M`, and `G` suffixes and rejects oversized values.
+
 ## Next Stage
 
 The next useful milestones are broader isolation and runtime hardening beyond the current bootstrap path.
@@ -154,7 +159,7 @@ Practical targets from here:
 
 - user namespaces for safer unprivileged execution paths
 - network namespaces for interface isolation
-- stronger lifecycle and cleanup handling around mounted resources
+- more complete signal and lifecycle handling across containerized process trees
 
 ## Long-Term Goal
 
@@ -183,7 +188,7 @@ Stage 4  Mount namespace + /proc            DONE
 Stage 5  pivot_root                         DONE
 Stage 6  Bind mounts                        DONE
 Stage 7  cgroups v2                         DONE
-Stage 8  Signals and lifecycle management
+Stage 8  Signals and lifecycle management   PARTIAL
 Stage 9  User namespaces
 Stage 10 Network namespaces
 Stage 11 OCI runtime bundle support
