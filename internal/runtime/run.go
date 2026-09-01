@@ -7,6 +7,7 @@ import (
 	"minictr/internal/config"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 )
 
@@ -103,12 +104,53 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 	fmt.Println("Child Process ID:", cmd.Process.Pid)
 
 	if err := cg.AddProcess(cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return err
 	}
+
+	// Handle signals and forward them to the child process.
+	done := make(chan struct{})
+	signals := handleLinuxSignals(cmd, &done)
+
+	// Ensure closing of the signals
+	// signals.Stop does not close the channel it only stops receiving signals.
+	defer func() {
+		signal.Stop(signals)
+		close(done)
+	}()
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("wait for child process: %w", err)
 	}
 
 	return nil
+}
+
+func handleLinuxSignals(cmd *exec.Cmd, done *chan struct{}) chan os.Signal {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(
+		signals,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGHUP,
+		syscall.SIGQUIT,
+	)
+	go func() {
+		for {
+			select {
+			case sig := <-signals:
+				if cmd.Process != nil {
+					fmt.Printf("Forwarded signal %v to child process\n", sig)
+					if err := cmd.Process.Signal(sig); err != nil {
+						fmt.Printf("Failed to forward signal %v to child process: %v\n", sig, err)
+					}
+
+				}
+			case <-*done:
+				return
+			}
+		}
+	}()
+	return signals
 }
