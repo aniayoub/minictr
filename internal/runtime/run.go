@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"minictr/internal/cgroup"
 	"minictr/internal/config"
+	"minictr/internal/minictr"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,9 +15,7 @@ import (
 func Run(runWith []string, cfg *config.Config) (retErr error) {
 	fmt.Println("Parent Process ID:", os.Getpid())
 
-	args := append([]string{"init"}, runWith...)
-
-	cmd := createCommand(args)
+	cmd := createCommand(runWith)
 
 	cg, err := createCgroup(cfg)
 
@@ -76,7 +75,9 @@ func createCgroup(cfg *config.Config) (cg *cgroup.Cgroup, retErr error) {
 	return cg, nil
 }
 
-func createCommand(args []string) *exec.Cmd {
+func createCommand(runWith []string) *exec.Cmd {
+	args := append([]string{"init"}, runWith...)
+
 	// Create a new child process the Unix way,
 	// using the same executable but with the "init" argument.
 	cmd := exec.Command("/proc/self/exe", args...)
@@ -111,7 +112,7 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 
 	// Handle signals and forward them to the child process.
 	done := make(chan struct{})
-	signals := handleLinuxSignals(cmd, &done)
+	signals := minictr.HandleLinuxSignals(cmd, done)
 
 	// Ensure closing of the signals
 	// signals.Stop does not close the channel it only stops receiving signals.
@@ -125,32 +126,4 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 	}
 
 	return nil
-}
-
-func handleLinuxSignals(cmd *exec.Cmd, done *chan struct{}) chan os.Signal {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(
-		signals,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGHUP,
-		syscall.SIGQUIT,
-	)
-	go func() {
-		for {
-			select {
-			case sig := <-signals:
-				if cmd.Process != nil {
-					fmt.Printf("Forwarded signal %v to child process\n", sig)
-					if err := cmd.Process.Signal(sig); err != nil {
-						fmt.Printf("Failed to forward signal %v to child process: %v\n", sig, err)
-					}
-
-				}
-			case <-*done:
-				return
-			}
-		}
-	}()
-	return signals
 }

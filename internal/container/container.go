@@ -3,7 +3,10 @@ package container
 import (
 	"fmt"
 	"minictr/internal/config"
+	"minictr/internal/minictr"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
@@ -167,11 +170,44 @@ func mountProc() error {
 }
 
 func execWorkload(command string, args []string) error {
+
+	/** The following code executes the new command using unix.Exec, which replaces the current process with the specified command.
+	However, this gives the process a PID of 1 inside the new namespace which causes issues with signal handling and process management.
+	Instead, we will use the exec.Command approach to spawn a new process for the workload, which allows proper signal handling and process management.
 	fmt.Println("Executing workload:", command, args)
 	// If Exec succeeds, this function never returns.
 	if err := unix.Exec(command, args, os.Environ()); err != nil {
 		return fmt.Errorf("exec workload: %w", err)
 	}
+	*/
 
+	fmt.Println("Container init pid:", os.Getpid())
+	// args already include the command as the first element, so we skip it for cmdArgs.
+	cmdArgs := args[1:]
+	cmd := exec.Command(command, cmdArgs...)
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start workload: %w", err)
+	}
+
+	fmt.Println("Workload started with PID:", cmd.Process.Pid)
+
+	done := make(chan struct{})
+	signals := minictr.HandleLinuxSignals(cmd, done)
+
+	// Ensure closing of the signals
+	// signals.Stop does not close the channel it only stops receiving signals.
+	defer func() {
+		signal.Stop(signals)
+		close(done)
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("wait for workload: %w", err)
+	}
 	return nil
 }
