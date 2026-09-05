@@ -2,9 +2,9 @@
 
 This document started as the Stage 1 process-exec note, but it now reflects the current runtime path implemented in the repository.
 
-The core idea is still the same: the parent re-execs the current binary, and the child performs setup before replacing itself with the requested workload.
+The core idea is still the same: the parent re-execs the current binary, and the child performs setup before starting the requested workload.
 
-Today, the overall runtime path includes config parsing, cgroup setup, namespace creation, hostname configuration, mount propagation changes, `pivot_root`, and mounting `/proc`.
+Today, the overall runtime path includes config parsing, cgroup setup, namespace creation, hostname configuration, mount propagation changes, `pivot_root`, mounting `/proc`, and launching the workload as a child of `init`.
 
 ## Why This Matters
 
@@ -56,15 +56,17 @@ host PID 5001
         | mountBinds()
         | pivot_root()
         | mount /proc
-        | unix.Exec(...)
+        | exec.Command(...)
+        | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
+        | wait for workload
         v
 
 /bin/sh
-host PID 5001
-container PID 1
+host PID 5002
+container PID 2
 ```
 
-From the host's point of view, the child still has a normal host PID such as 5001. Inside the container PID namespace, the workload becomes PID 1.
+From the host's point of view, both the container init process and the workload have normal host PIDs such as 5001 and 5002. Inside the container PID namespace, `init` becomes PID 1 and the workload runs as its child, typically PID 2.
 
 ## Current CLI Shape
 
@@ -124,6 +126,8 @@ Standard input, output, and error are inherited from the parent so interactive c
 
 After `Start()`, the parent adds the child PID to the cgroup, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for the workload to exit, and removes the cgroup on cleanup.
 
+In the current implementation, the child receiving those signals is the `init` process inside the new PID namespace. That `init` process then forwards the same signal set to the workload subprocess it created.
+
 If cgroup membership fails after the child has been started, the runtime kills the child process and waits for it before returning the error.
 
 ## What `init` Does
@@ -141,7 +145,9 @@ Inside the child process, `init` receives the already-parsed config and performs
 9. change directory to `/`
 10. unmount and remove the old root
 11. mount `proc` at `/proc`
-12. replace the init process with the requested workload using `unix.Exec()`
+12. start the requested workload with `exec.Command(...)`
+13. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload
+14. wait for the workload to exit
 
 That ordering matters because mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
 
@@ -178,10 +184,10 @@ The current code already provides:
 - configurable hostname
 - repeated bind mounts with `--bind source:target`
 - cgroup v2 resource limits for PID count, memory, and CPU quota
-- forwarding of common Linux termination signals from parent to child
+- forwarding of common Linux termination signals across both runtime hops
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem
-- final workload replacement through `unix.Exec()`
+- final workload launch as a subprocess of `init`
 
 ## Current Limitations
 
@@ -196,27 +202,30 @@ Current limitations include:
 - no network namespaces yet
 - no OCI bundle or image workflow yet
 
-## Key Observation About `unix.Exec`
+## Current Workload Process Model
 
-`unix.Exec()` does not create a new process.
+The current implementation does create a new process for the workload.
 
-Before:
+Before the workload starts:
 
 ```text
 container PID 1
 minictr init /bin/sh
 ```
 
-After:
+After `init` launches the workload:
 
 ```text
 container PID 1
+minictr init ./rootfs -- /bin/sh
+
+container PID 2
 /bin/sh
 ```
 
-The process changes identity, but not its PID within that namespace.
+This means the bootstrap process remains the namespace's PID 1 while the requested command runs underneath it.
 
-That distinction is fundamental to Linux process control: the kernel swaps the running program image for the new executable while keeping the process slot alive.
+That distinction matters because PID 1 has special process-lifecycle semantics on Linux. The current code handles only the direct workload child: `init` forwards common termination signals and waits for that one process, but it does not yet implement broader init-style reaping or subtree lifecycle management.
 
 ## Next Useful Milestones
 

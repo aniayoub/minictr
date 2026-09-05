@@ -58,17 +58,17 @@ What is implemented now:
 - container hostname is configurable with `--hostname`
 - host paths can be bind-mounted into the container with repeated `--bind source:target` flags
 - cgroups v2 limits can be applied for PID count, memory, and CPU quota
-- common Linux termination signals are forwarded from the parent runtime to the child process
+- common Linux termination signals are forwarded from the parent runtime to `init`, and from `init` to the workload process
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
-- `init` replaces itself with the requested workload using `unix.Exec()`
+- `init` starts the requested workload as a child process and waits for it to exit
 
 What this demonstrates:
 
 - practical use of Linux namespace flags from Go
 - direct cgroup v2 manipulation through `pids.max`, `memory.max`, and `cpu.max`
-- basic Unix signal handling and forwarding in a parent/child runtime model
-- understanding of the difference between process creation and process replacement
+- basic Unix signal handling and forwarding across both runtime hops
+- understanding of the difference between the container bootstrap process and the workload it launches
 - direct control over mount propagation and root filesystem transitions
 - explicit host-to-container filesystem mapping through bind mounts
 - hands-on knowledge of how container bootstrap code prepares an isolated runtime environment
@@ -101,6 +101,8 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                        +-- bind mount host paths into rootfs
                        +-- pivot_root into rootfs
                        +-- mount /proc
+                       +-- start workload as a child process
+                       +-- forward signals to workload and wait for exit
                        |
                        v
                  target process
@@ -144,6 +146,8 @@ sudo ./minictr run ./rootfs \
 The config parser runs once in `main()` before dispatching to `run` or `init`, so both code paths operate on the same parsed runtime configuration.
 
 That design keeps the runtime honest: the child path does not rely on hidden global state, and the parent can apply resource controls before the child starts running the workload.
+
+Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `exec.Command(...)`, forwards common termination signals to it, and waits for it to exit.
 
 Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
 
