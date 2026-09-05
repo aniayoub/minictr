@@ -61,14 +61,14 @@ What is implemented now:
 - common Linux termination signals are forwarded from the parent runtime to `init`, and from `init` to the workload process
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
-- `init` starts the requested workload as a child process and waits for it to exit
+- `init` supervises the requested workload as a child process, reaps exited children while waiting, and returns the workload exit code
 
 What this demonstrates:
 
 - practical use of Linux namespace flags from Go
 - direct cgroup v2 manipulation through `pids.max`, `memory.max`, and `cpu.max`
 - basic Unix signal handling and forwarding across both runtime hops
-- understanding of the difference between the container bootstrap process and the workload it launches
+- understanding of how a container bootstrap process can act as PID 1 and supervise a workload
 - direct control over mount propagation and root filesystem transitions
 - explicit host-to-container filesystem mapping through bind mounts
 - hands-on knowledge of how container bootstrap code prepares an isolated runtime environment
@@ -102,7 +102,8 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                        +-- pivot_root into rootfs
                        +-- mount /proc
                        +-- start workload as a child process
-                       +-- forward signals to workload and wait for exit
+                       +-- forward signals to workload
+                       +-- reap child exits and return workload status
                        |
                        v
                  target process
@@ -147,7 +148,7 @@ The config parser runs once in `main()` before dispatching to `run` or `init`, s
 
 That design keeps the runtime honest: the child path does not rely on hidden global state, and the parent can apply resource controls before the child starts running the workload.
 
-Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `exec.Command(...)`, forwards common termination signals to it, and waits for it to exit.
+Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `exec.Command(...)`, forwards common termination signals to it, reaps exited child processes while supervising, and exits with the workload's final status.
 
 Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
 
@@ -163,7 +164,7 @@ Practical targets from here:
 
 - user namespaces for safer unprivileged execution paths
 - network namespaces for interface isolation
-- more complete signal and lifecycle handling across containerized process trees
+- broader process-tree supervision and init-style lifecycle hardening
 
 ## Long-Term Goal
 
@@ -192,13 +193,17 @@ Stage 4  Mount namespace + /proc            DONE
 Stage 5  pivot_root                         DONE
 Stage 6  Bind mounts                        DONE
 Stage 7  cgroups v2                         DONE
-Stage 8  Signals and lifecycle management   PARTIAL
+Stage 8  Signals and lifecycle management   DONE
 Stage 9  User namespaces
 Stage 10 Network namespaces
 Stage 11 OCI runtime bundle support
 Stage 12 OCI image support
 Stage 13 Security hardening
 ```
+
+For this MVP, Stage 8 means the runtime forwards common termination signals across both runtime hops, `init` supervises the workload as PID 1, exited children are reaped while waiting for the main workload, and the workload's final exit status is propagated back out of the container path.
+
+More complete process-tree supervision is still a useful future improvement, but it is treated here as runtime hardening rather than a blocker for the learning milestone.
 
 The initial MVP will stop well before full feature parity with existing runtimes. The priority is understanding each primitive deeply rather than reproducing Docker.
 

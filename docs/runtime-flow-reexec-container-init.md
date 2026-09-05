@@ -18,7 +18,7 @@ This project is useful as Linux systems practice because it works directly with 
 - bind mount preparation and host-to-container path mapping
 - root filesystem switching with `pivot_root`
 - procfs setup inside an isolated filesystem view
-- process replacement through `exec`
+- PID 1-style workload supervision with explicit child reaping
 
 ## Process Architecture
 
@@ -58,7 +58,8 @@ host PID 5001
         | mount /proc
         | exec.Command(...)
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
-        | wait for workload
+        | wait4() and reap child exits
+        | exit with workload status
         v
 
 /bin/sh
@@ -124,9 +125,9 @@ This gives the child:
 
 Standard input, output, and error are inherited from the parent so interactive commands still work.
 
-After `Start()`, the parent adds the child PID to the cgroup, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for the workload to exit, and removes the cgroup on cleanup.
+After `Start()`, the parent adds the child PID to the cgroup, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for `init` to exit, and removes the cgroup on cleanup.
 
-In the current implementation, the child receiving those signals is the `init` process inside the new PID namespace. That `init` process then forwards the same signal set to the workload subprocess it created.
+In the current implementation, the child receiving those signals is the `init` process inside the new PID namespace. That `init` process then forwards the same signal set to the workload subprocess it created, reaps child exits with `wait4()`, and exits with the workload's resulting status code.
 
 If cgroup membership fails after the child has been started, the runtime kills the child process and waits for it before returning the error.
 
@@ -147,7 +148,8 @@ Inside the child process, `init` receives the already-parsed config and performs
 11. mount `proc` at `/proc`
 12. start the requested workload with `exec.Command(...)`
 13. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload
-14. wait for the workload to exit
+14. call `wait4()` in a loop to reap child exits while supervising
+15. exit with the main workload's exit code or signal-derived status
 
 That ordering matters because mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
 
@@ -185,6 +187,7 @@ The current code already provides:
 - repeated bind mounts with `--bind source:target`
 - cgroup v2 resource limits for PID count, memory, and CPU quota
 - forwarding of common Linux termination signals across both runtime hops
+- reaping of child exits while `init` supervises the workload
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem
 - final workload launch as a subprocess of `init`
@@ -225,7 +228,11 @@ container PID 2
 
 This means the bootstrap process remains the namespace's PID 1 while the requested command runs underneath it.
 
-That distinction matters because PID 1 has special process-lifecycle semantics on Linux. The current code handles only the direct workload child: `init` forwards common termination signals and waits for that one process, but it does not yet implement broader init-style reaping or subtree lifecycle management.
+That distinction matters because PID 1 has special process-lifecycle semantics on Linux. The current code now forwards common termination signals, uses `wait4()` to reap child exits while waiting for the main workload, and propagates the main workload's exit status back through `init`.
+
+For this MVP, that behavior is enough to consider the signals and lifecycle milestone complete: the runtime can supervise a direct workload, preserve its exit status, and avoid leaving exited children unreaped while the main process is still running.
+
+The remaining gap is broader subtree supervision. The code logs and reaps other exited children it observes while waiting for the main workload, but it does not yet implement fuller init-style lifecycle management beyond that loop.
 
 ## Next Useful Milestones
 

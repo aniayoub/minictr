@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func Init(config *config.Config) error {
+func Init(config *config.Config) (int, error) {
 	fmt.Println("Container init PID:", os.Getpid())
 
 	rootfs := config.Rootfs
@@ -21,26 +21,30 @@ func Init(config *config.Config) error {
 	commandArgs := config.Command[0:]
 
 	if err := setHostname(config.Hostname); err != nil {
-		return err
+		return 1, err
 	}
 
 	if err := makeMountsPrivate(); err != nil {
-		return err
+		return 1, err
 	}
 
 	if err := mountBinds(rootfs, config.BindMounts); err != nil {
-		return err
+		return 1, err
 	}
 
 	if err := pivotRoot(rootfs); err != nil {
-		return err
+		return 1, err
 	}
 
 	if err := mountProc(); err != nil {
-		return err
+		return 1, err
 	}
 
-	return execWorkload(command, commandArgs)
+	code, err := superviseWorkload(command, commandArgs)
+	if err != nil {
+		return code, err
+	}
+	return code, nil
 }
 
 func setHostname(hostname string) error {
@@ -169,21 +173,15 @@ func mountProc() error {
 	return nil
 }
 
-func execWorkload(command string, args []string) error {
+func superviseWorkload(command string, args []string) (int, error) {
 
-	/** The following code executes the new command using unix.Exec, which replaces the current process with the specified command.
-	However, this gives the process a PID of 1 inside the new namespace which causes issues with signal handling and process management.
-	Instead, we will use the exec.Command approach to spawn a new process for the workload, which allows proper signal handling and process management.
-	fmt.Println("Executing workload:", command, args)
-	// If Exec succeeds, this function never returns.
-	if err := unix.Exec(command, args, os.Environ()); err != nil {
-		return fmt.Errorf("exec workload: %w", err)
-	}
-	*/
-
+	// Given the current setup, the PID will be 1 for this process, which is the init process inside the container.
 	fmt.Println("Container init pid:", os.Getpid())
+
 	// args already include the command as the first element, so we skip it for cmdArgs.
 	cmdArgs := args[1:]
+	// Create a command instead of using exec.Command, this way we avoid the assignment of PID 1 to the workload process,
+	// which would prevent it from receiving signals like SIGTERM.
 	cmd := exec.Command(command, cmdArgs...)
 
 	cmd.Stdin = os.Stdin
@@ -191,7 +189,7 @@ func execWorkload(command string, args []string) error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start workload: %w", err)
+		return 1, fmt.Errorf("start workload: %w", err)
 	}
 
 	fmt.Println("Workload started with PID:", cmd.Process.Pid)
@@ -206,8 +204,48 @@ func execWorkload(command string, args []string) error {
 		close(done)
 	}()
 
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("wait for workload: %w", err)
+	code, err := waitAndReap(cmd)
+	if err != nil {
+		return 1, fmt.Errorf("wait for workload: %w", err)
 	}
-	return nil
+	fmt.Println("Workload exited with code:", code)
+	return code, nil
+}
+
+func waitAndReap(cmd *exec.Cmd) (int, error) {
+	mainPid := cmd.Process.Pid
+
+	for {
+		var status unix.WaitStatus
+
+		pid, err := unix.Wait4(-1, &status, 0, nil)
+
+		if err != nil {
+			// Restart the wait if it was interrupted by a signal.
+			if err == unix.EINTR {
+				continue
+			}
+
+			return 0, fmt.Errorf("wait for child process: %w", err)
+		}
+
+		if pid != mainPid {
+			// TODO: Handle reaping of any other child processes that might have been spawned by the workload.
+			// For now, we just log that we reaped a child process and continue waiting for the main workload process.
+			fmt.Println("Reaped child process with PID:", pid)
+			continue
+		}
+
+		// If the main workload process has exited, we return an error that encapsulates the exit status.
+		// This allows the caller to determine the exit code or signal that caused the termination.
+		if status.Exited() {
+			return status.ExitStatus(), nil
+		}
+
+		if status.Signaled() {
+			return 128 + int(status.Signal()), nil
+		}
+
+		return 1, fmt.Errorf("workload process exited with unknown status")
+	}
 }

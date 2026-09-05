@@ -40,8 +40,9 @@ func main() {
 
 	case "init":
 
-		if err := container.Init(config); err != nil {
-			code := minictr.AdjustStopSignal(err)
+		code, err := container.Init(config)
+		if err != nil {
+			code = minictr.AdjustStopSignal(err)
 
 			if code != 1 {
 				os.Exit(code)
@@ -51,6 +52,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+
+		os.Exit(code)
 
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])

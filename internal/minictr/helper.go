@@ -23,7 +23,7 @@ func HandleLinuxSignals(cmd *exec.Cmd, done <-chan struct{}) chan os.Signal {
 			select {
 			case sig := <-signals:
 				if cmd.Process != nil {
-					fmt.Printf("Forwarded signal %v to process %d\n", sig, cmd.Process.Pid)
+					fmt.Printf("Forwarding signal %v to process %d...\n", sig, cmd.Process.Pid)
 					if err := cmd.Process.Signal(sig); err != nil {
 						fmt.Printf("Failed to forward signal %v to child process: %v\n", sig, err)
 					}
