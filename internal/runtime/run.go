@@ -91,7 +91,8 @@ func createCommand(runWith []string) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
-			syscall.CLONE_NEWNS,
+			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWIPC,
 	}
 
 	return cmd

@@ -14,6 +14,7 @@ This project is useful as Linux systems practice because it works directly with 
 - cgroup v2 setup and process membership management
 - Unix signal forwarding from the runtime to the child process
 - namespace creation via `clone` flags
+- IPC namespace isolation in addition to UTS, PID, and mount isolation
 - mount namespace behavior and propagation control
 - bind mount preparation and host-to-container path mapping
 - root filesystem switching with `pivot_root`
@@ -116,12 +117,14 @@ It configures the child with these namespace flags:
 - `CLONE_NEWUTS`
 - `CLONE_NEWPID`
 - `CLONE_NEWNS`
+- `CLONE_NEWIPC`
 
 This gives the child:
 
 - an isolated hostname view
 - an isolated PID namespace
 - an isolated mount namespace
+- an isolated IPC namespace
 
 Standard input, output, and error are inherited from the parent so interactive commands still work.
 
@@ -182,6 +185,7 @@ The current code already provides:
 - re-exec based parent/child architecture
 - UTS namespace creation
 - PID namespace creation
+- IPC namespace creation
 - mount namespace creation
 - configurable hostname
 - repeated bind mounts with `--bind source:target`

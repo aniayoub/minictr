@@ -54,7 +54,7 @@ sudo ./minictr run ./rootfs \
 What is implemented now:
 
 - parent process re-execs the current binary in `init` mode
-- child runs in new UTS, PID, and mount namespaces
+- child runs in new UTS, PID, mount, and IPC namespaces
 - container hostname is configurable with `--hostname`
 - host paths can be bind-mounted into the container with repeated `--bind source:target` flags
 - cgroups v2 limits can be applied for PID count, memory, and CPU quota
@@ -66,6 +66,7 @@ What is implemented now:
 What this demonstrates:
 
 - practical use of Linux namespace flags from Go
+- practical use of IPC namespace isolation alongside process and mount isolation
 - direct cgroup v2 manipulation through `pids.max`, `memory.max`, and `cpu.max`
 - basic Unix signal handling and forwarding across both runtime hops
 - understanding of how a container bootstrap process can act as PID 1 and supervise a workload
@@ -180,7 +181,7 @@ sudo ./minictr run \
       /bin/sh
 ```
 
-That process should eventually run with its own hostname, PID namespace, mount namespace, filesystem root, `/proc`, and resource limits.
+That process should eventually run with its own hostname, PID namespace, mount namespace, IPC namespace, filesystem root, `/proc`, and resource limits.
 
 ## Roadmap
 
@@ -189,19 +190,20 @@ Stage 0  Environment inspection             DONE
 Stage 1  Process execution / re-exec        DONE
 Stage 2  UTS namespace                      DONE
 Stage 3  PID namespace                      DONE
-Stage 4  Mount namespace + /proc            DONE
-Stage 5  pivot_root                         DONE
-Stage 6  Bind mounts                        DONE
-Stage 7  cgroups v2                         DONE
-Stage 8  Signals and lifecycle management   DONE
-Stage 9  User namespaces
-Stage 10 Network namespaces
-Stage 11 OCI runtime bundle support
-Stage 12 OCI image support
-Stage 13 Security hardening
+Stage 4  IPC namespace                      DONE
+Stage 5  Mount namespace + /proc            DONE
+Stage 6  pivot_root                         DONE
+Stage 7  Bind mounts                        DONE
+Stage 8  cgroups v2                         DONE
+Stage 9  Signals and lifecycle management   DONE
+Stage 10 User namespaces
+Stage 11 Network namespaces
+Stage 12 OCI runtime bundle support
+Stage 13 OCI image support
+Stage 14 Security hardening
 ```
 
-For this MVP, Stage 8 means the runtime forwards common termination signals across both runtime hops, `init` supervises the workload as PID 1, exited children are reaped while waiting for the main workload, and the workload's final exit status is propagated back out of the container path.
+For this MVP, Stage 9 means the runtime forwards common termination signals across both runtime hops, `init` supervises the workload as PID 1, exited children are reaped while waiting for the main workload, and the workload's final exit status is propagated back out of the container path.
 
 More complete process-tree supervision is still a useful future improvement, but it is treated here as runtime hardening rather than a blocker for the learning milestone.
 
