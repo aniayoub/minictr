@@ -4,7 +4,7 @@ This document started as the Stage 1 process-exec note, but it now reflects the 
 
 The core idea is still the same: the parent re-execs the current binary, and the child performs setup before starting the requested workload.
 
-Today, the overall runtime path includes config parsing, cgroup setup, namespace creation, hostname configuration, mount propagation changes, `pivot_root`, mounting `/proc`, and launching the workload as a child of `init`.
+Today, the overall runtime path includes config parsing, cgroup setup, namespace creation, a parent/child startup handshake for cgroup synchronization, hostname configuration, mount propagation changes, `pivot_root`, mounting `/proc`, and launching the workload as a child of `init`.
 
 ## Why This Matters
 
@@ -12,6 +12,7 @@ This project is useful as Linux systems practice because it works directly with 
 
 - process bootstrap with re-exec
 - cgroup v2 setup and process membership management
+- parent/child startup synchronization through an inherited pipe
 - Unix signal forwarding from the runtime to the child process
 - namespace creation via `clone` flags
 - IPC namespace isolation in addition to UTS, PID, and mount isolation
@@ -43,6 +44,7 @@ host PID 5000
         | write pids.max / memory.max / cpu.max
         | exec.Command("/proc/self/exe", ...)
         | add child to cgroup
+        | write token to fd 3 sync pipe
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         v
 
@@ -52,6 +54,7 @@ Process B
 host PID 5001
 
         |
+        | read one-byte token from fd 3
         | sethostname()
         | make mounts private
         | mountBinds()
@@ -112,6 +115,8 @@ Before dispatching into `run` or `init`, `main()` parses the full runtime config
 
 When running in parent mode, the runtime also creates a cgroup under `/sys/fs/cgroup/minictr-<pid>` and applies any configured limits before starting the child.
 
+The parent also creates a pipe and passes its read end to the child as file descriptor 3. That lets `init` block immediately after startup until the parent has successfully added the child PID to the cgroup.
+
 It configures the child with these namespace flags:
 
 - `CLONE_NEWUTS`
@@ -128,7 +133,7 @@ This gives the child:
 
 Standard input, output, and error are inherited from the parent so interactive commands still work.
 
-After `Start()`, the parent adds the child PID to the cgroup, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for `init` to exit, and removes the cgroup on cleanup.
+After `Start()`, the parent adds the child PID to the cgroup, writes a one-byte continue token into the sync pipe, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for `init` to exit, and removes the cgroup on cleanup.
 
 In the current implementation, the child receiving those signals is the `init` process inside the new PID namespace. That `init` process then forwards the same signal set to the workload subprocess it created, reaps child exits with `wait4()`, and exits with the workload's resulting status code.
 
@@ -138,23 +143,24 @@ If cgroup membership fails after the child has been started, the runtime kills t
 
 Inside the child process, `init` receives the already-parsed config and performs container setup in this order:
 
-1. set the container hostname
-2. mark mounts as private with `MS_PRIVATE | MS_REC`
-3. resolve each bind source to an absolute host path
-4. clean each bind target and verify it is absolute inside the container
-5. create the bind target directory under the selected rootfs
-6. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
-7. bind-mount the rootfs onto itself so it becomes a mount point
-8. call `pivot_root`
-9. change directory to `/`
-10. unmount and remove the old root
-11. mount `proc` at `/proc`
-12. start the requested workload with `os.StartProcess(...)`
-13. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
-14. call `wait4()` in a loop to reap child exits while supervising
-15. exit with the main workload's exit code or signal-derived status
+1. block on file descriptor 3 until the parent signals that cgroup setup is complete
+2. set the container hostname
+3. mark mounts as private with `MS_PRIVATE | MS_REC`
+4. resolve each bind source to an absolute host path
+5. clean each bind target and verify it is absolute inside the container
+6. create the bind target directory under the selected rootfs
+7. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
+8. bind-mount the rootfs onto itself so it becomes a mount point
+9. call `pivot_root`
+10. change directory to `/`
+11. unmount and remove the old root
+12. mount `proc` at `/proc`
+13. start the requested workload with `os.StartProcess(...)`
+14. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
+15. call `wait4()` in a loop to reap child exits while supervising
+16. exit with the main workload's exit code or signal-derived status
 
-That ordering matters because mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup, mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
 
 For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
 
@@ -191,6 +197,7 @@ The current code already provides:
 - repeated bind mounts with `--bind source:target`
 - cgroup v2 resource limits for PID count, memory, and CPU quota
 - forwarding of common Linux termination signals across both runtime hops
+- startup synchronization so cgroup membership is established before container setup proceeds
 - reaping of child exits while `init` supervises the workload
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem

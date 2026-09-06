@@ -9,6 +9,8 @@ import (
 	"syscall"
 )
 
+const CGroupFD uintptr = 3
+
 func HandleLinuxSignals(proc *os.Process, done <-chan struct{}) chan os.Signal {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(

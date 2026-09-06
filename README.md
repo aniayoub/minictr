@@ -58,6 +58,7 @@ What is implemented now:
 - container hostname is configurable with `--hostname`
 - host paths can be bind-mounted into the container with repeated `--bind source:target` flags
 - cgroups v2 limits can be applied for PID count, memory, and CPU quota
+- `init` waits for an explicit parent sync signal before beginning container setup, so cgroup membership is established first
 - common Linux termination signals are forwarded from the parent runtime to `init`, and from `init` to the workload process
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
 - `/proc` is mounted inside the container rootfs
@@ -92,10 +93,14 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                        |
                        +-- parse runtime config once in main
                        +-- create cgroup and apply resource limits
-                       +-- start child, join it to cgroup, and forward signals
+                       +-- start child with sync pipe on fd 3
+                       +-- join child to cgroup
+                       +-- signal child to continue setup
+                       +-- forward signals while child runs
                        v
            /proc/self/exe init <rootfs> [runtime-options] -- <command> [args...]
                        |
+                       +-- wait for parent sync token on fd 3
                        +-- set hostname
                        +-- make mounts private
                        +-- create bind-mount targets under rootfs
@@ -148,6 +153,8 @@ sudo ./minictr run ./rootfs \
 The config parser runs once in `main()` before dispatching to `run` or `init`, so both code paths operate on the same parsed runtime configuration.
 
 That design keeps the runtime honest: the child path does not rely on hidden global state, and the parent can apply resource controls before the child starts running the workload.
+
+Startup is now explicitly synchronized across the parent/child boundary. The parent passes a pipe to `init` on file descriptor 3, waits until the child has been started, adds that child PID to the cgroup, and only then writes a one-byte token that allows `init` to continue with hostname, mount, and workload setup.
 
 Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `os.StartProcess(...)`, forwards common termination signals to its `os.Process` handle, reaps exited child processes while supervising, and exits with the workload's final status.
 

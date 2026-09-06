@@ -19,6 +19,10 @@ func Init(config *config.Config) (int, error) {
 	cmd := config.Command[0]
 	cmdArgv := config.Command[0:]
 
+	if err := waitForParentSignal(); err != nil {
+		return 1, err
+	}
+
 	if err := setHostname(config.Hostname); err != nil {
 		return 1, err
 	}
@@ -44,6 +48,29 @@ func Init(config *config.Config) (int, error) {
 		return code, err
 	}
 	return code, nil
+}
+
+func waitForParentSignal() error {
+	syncFile := os.NewFile(minictr.CGroupFD, "cgroup-sync")
+	defer syncFile.Close() // Ensure the file is closed when done and FD 3 is released.
+
+	fmt.Println("child waiting on fd 3 for parent to set up cgroup and signal us to continue...")
+
+	// Wait until parent sets up the cgroup and signals us to continue.
+	var token [1]byte
+	_, err := syncFile.Read(token[:])
+	if err != nil {
+		return fmt.Errorf("read from sync pipe: %w", err)
+	}
+
+	if token[0] != 1 {
+		return fmt.Errorf("unexpected token from sync pipe: %v", token[0])
+	}
+
+	fmt.Println("child received signal from parent to continue, proceeding with container setup...")
+
+	return nil
+
 }
 
 func setHostname(hostname string) error {

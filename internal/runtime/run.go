@@ -99,16 +99,41 @@ func createCommand(runWith []string) *exec.Cmd {
 }
 
 func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
+	// Create a pipe to block the child from starting until the parent has added it to the cgroup.
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("create pipe: %w", err)
+	}
+
+	// Pass the read end to the child process
+	// NOTE: go guarantees that 0, 1, and 2 are reserved for stdin, stdout, and stderr respectively.
+	// So, readend goes to fd 3
+	cmd.ExtraFiles = []*os.File{readEnd}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start child process: %w", err)
 	}
 
+	readEnd.Close() // Close the read end in the parent process, as it's only needed in the child.
+
 	fmt.Println("Child Process ID:", cmd.Process.Pid)
 
 	if err := cg.AddProcess(cmd.Process.Pid); err != nil {
+		writeEnd.Close() // Close the write end before returning, as we won't be signaling the child to continue.
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return err
+	}
+
+	fmt.Printf("cgroup setup completed and PID %d added to cgroup, signaling child to continue...\n", cmd.Process.Pid)
+
+	// Signal the child process to continue runing the workload
+	_, err = writeEnd.Write([]byte{1})
+	if err != nil {
+		writeEnd.Close() // Close the write end before returning, as we won't be signaling the child to continue.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("write to sync pipe: %w", err)
 	}
 
 	// Handle signals and forward them to the child process.
