@@ -57,7 +57,7 @@ host PID 5001
         | mountBinds()
         | pivot_root()
         | mount /proc
-        | exec.Command(...)
+        | os.StartProcess(...)
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         | wait4() and reap child exits
         | exit with workload status
@@ -149,8 +149,8 @@ Inside the child process, `init` receives the already-parsed config and performs
 9. change directory to `/`
 10. unmount and remove the old root
 11. mount `proc` at `/proc`
-12. start the requested workload with `exec.Command(...)`
-13. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload
+12. start the requested workload with `os.StartProcess(...)`
+13. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
 14. call `wait4()` in a loop to reap child exits while supervising
 15. exit with the main workload's exit code or signal-derived status
 

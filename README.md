@@ -149,7 +149,7 @@ The config parser runs once in `main()` before dispatching to `run` or `init`, s
 
 That design keeps the runtime honest: the child path does not rely on hidden global state, and the parent can apply resource controls before the child starts running the workload.
 
-Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `exec.Command(...)`, forwards common termination signals to it, reaps exited child processes while supervising, and exits with the workload's final status.
+Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `os.StartProcess(...)`, forwards common termination signals to its `os.Process` handle, reaps exited child processes while supervising, and exits with the workload's final status.
 
 Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
 

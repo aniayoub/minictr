@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func HandleLinuxSignals(cmd *exec.Cmd, done <-chan struct{}) chan os.Signal {
+func HandleLinuxSignals(proc *os.Process, done <-chan struct{}) chan os.Signal {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(
 		signals,
@@ -22,9 +22,9 @@ func HandleLinuxSignals(cmd *exec.Cmd, done <-chan struct{}) chan os.Signal {
 		for {
 			select {
 			case sig := <-signals:
-				if cmd.Process != nil {
-					fmt.Printf("Forwarding signal %v to process %d...\n", sig, cmd.Process.Pid)
-					if err := cmd.Process.Signal(sig); err != nil {
+				if proc != nil {
+					fmt.Printf("Forwarding signal %v to process %d...\n", sig, proc.Pid)
+					if err := proc.Signal(sig); err != nil {
 						fmt.Printf("Failed to forward signal %v to child process: %v\n", sig, err)
 					}
 

@@ -113,7 +113,7 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 
 	// Handle signals and forward them to the child process.
 	done := make(chan struct{})
-	signals := minictr.HandleLinuxSignals(cmd, done)
+	signals := minictr.HandleLinuxSignals(cmd.Process, done)
 
 	// Ensure closing of the signals
 	// signals.Stop does not close the channel it only stops receiving signals.

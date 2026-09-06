@@ -5,7 +5,6 @@ import (
 	"minictr/internal/config"
 	"minictr/internal/minictr"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -17,8 +16,8 @@ func Init(config *config.Config) (int, error) {
 	fmt.Println("Container init PID:", os.Getpid())
 
 	rootfs := config.Rootfs
-	command := config.Command[0]
-	commandArgs := config.Command[0:]
+	cmd := config.Command[0]
+	cmdArgv := config.Command[0:]
 
 	if err := setHostname(config.Hostname); err != nil {
 		return 1, err
@@ -40,7 +39,7 @@ func Init(config *config.Config) (int, error) {
 		return 1, err
 	}
 
-	code, err := superviseWorkload(command, commandArgs)
+	code, err := superviseWorkload(cmd, cmdArgv)
 	if err != nil {
 		return code, err
 	}
@@ -173,29 +172,23 @@ func mountProc() error {
 	return nil
 }
 
-func superviseWorkload(command string, args []string) (int, error) {
+func superviseWorkload(command string, argv []string) (int, error) {
 
 	// Given the current setup, the PID will be 1 for this process, which is the init process inside the container.
 	fmt.Println("Container init pid:", os.Getpid())
 
 	// args already include the command as the first element, so we skip it for cmdArgs.
-	cmdArgs := args[1:]
-	// Create a command instead of using exec.Command, this way we avoid the assignment of PID 1 to the workload process,
-	// which would prevent it from receiving signals like SIGTERM.
-	cmd := exec.Command(command, cmdArgs...)
-
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
+	proc, err := startProcess(command, argv)
+	if err != nil {
 		return 1, fmt.Errorf("start workload: %w", err)
 	}
 
-	fmt.Println("Workload started with PID:", cmd.Process.Pid)
+	defer proc.Release() // Ensure we release the process resources when done.
+
+	fmt.Println("Workload started with PID:", proc.Pid)
 
 	done := make(chan struct{})
-	signals := minictr.HandleLinuxSignals(cmd, done)
+	signals := minictr.HandleLinuxSignals(proc, done)
 
 	// Ensure closing of the signals
 	// signals.Stop does not close the channel it only stops receiving signals.
@@ -204,7 +197,7 @@ func superviseWorkload(command string, args []string) (int, error) {
 		close(done)
 	}()
 
-	code, err := waitAndReap(cmd)
+	code, err := waitAndReap(proc)
 	if err != nil {
 		return 1, fmt.Errorf("wait for workload: %w", err)
 	}
@@ -212,8 +205,26 @@ func superviseWorkload(command string, args []string) (int, error) {
 	return code, nil
 }
 
-func waitAndReap(cmd *exec.Cmd) (int, error) {
-	mainPid := cmd.Process.Pid
+func startProcess(commandName string, argv []string) (*os.Process, error) {
+	proc, err := os.StartProcess(
+		commandName,
+		argv,
+		&os.ProcAttr{
+			Env: os.Environ(),
+			Files: []*os.File{
+				os.Stdin,
+				os.Stdout,
+				os.Stderr,
+			},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("start process: %w", err)
+	}
+	return proc, nil
+}
+func waitAndReap(proc *os.Process) (int, error) {
+	mainPid := proc.Pid
 
 	for {
 		var status unix.WaitStatus
