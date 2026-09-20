@@ -54,7 +54,7 @@ func waitForParentSignal() error {
 	syncFile := os.NewFile(minictr.CGroupFD, "cgroup-sync")
 	defer syncFile.Close() // Ensure the file is closed when done and FD 3 is released.
 
-	fmt.Println("child waiting on fd 3 for parent to set up cgroup and signal us to continue...")
+	fmt.Println("Container waiting on fd 3 for supervisor to set up cgroup and signal us to continue...")
 
 	// Wait until parent sets up the cgroup and signals us to continue.
 	var token [1]byte
@@ -67,7 +67,7 @@ func waitForParentSignal() error {
 		return fmt.Errorf("unexpected token from sync pipe: %v", token[0])
 	}
 
-	fmt.Println("child received signal from parent to continue, proceeding with container setup...")
+	fmt.Println("Container received signal from supervisor to continue, proceeding with container setup")
 
 	return nil
 
@@ -200,10 +200,6 @@ func mountProc() error {
 }
 
 func superviseWorkload(command string, argv []string) (int, error) {
-
-	// Given the current setup, the PID will be 1 for this process, which is the init process inside the container.
-	fmt.Println("Container init pid:", os.Getpid())
-
 	// args already include the command as the first element, so we skip it for cmdArgs.
 	proc, err := startProcess(command, argv)
 	if err != nil {

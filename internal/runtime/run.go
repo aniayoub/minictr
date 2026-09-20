@@ -13,7 +13,7 @@ import (
 )
 
 func Run(runWith []string, cfg *config.Config) (retErr error) {
-	fmt.Println("Parent Process ID:", os.Getpid())
+	fmt.Println("Supervisor/Host Process ID:", os.Getpid())
 
 	cmd := createCommand(runWith)
 
@@ -116,7 +116,7 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 
 	readEnd.Close() // Close the read end in the parent process, as it's only needed in the child.
 
-	fmt.Println("Child Process ID:", cmd.Process.Pid)
+	fmt.Println("Container Process ID:", cmd.Process.Pid)
 
 	if err := cg.AddProcess(cmd.Process.Pid); err != nil {
 		writeEnd.Close() // Close the write end before returning, as we won't be signaling the child to continue.
