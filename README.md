@@ -56,7 +56,7 @@ What is implemented now:
 - parent process re-execs the current binary in `init` mode
 - child runs in new UTS, PID, mount, and IPC namespaces
 - container hostname is configurable with `--hostname`
-- host paths can be bind-mounted into the container with repeated `--bind source:target` flags
+- host paths can be bind-mounted into directory targets inside the container with repeated `--bind source:target` flags
 - cgroups v2 limits can be applied for PID count, memory, and CPU quota
 - `init` waits for an explicit parent sync signal before beginning container setup, so cgroup membership is established first
 - common Linux termination signals are forwarded from the parent runtime to `init`, and from `init` to the workload process
@@ -72,7 +72,7 @@ What this demonstrates:
 - basic Unix signal handling and forwarding across both runtime hops
 - understanding of how a container bootstrap process can act as PID 1 and supervise a workload
 - direct control over mount propagation and root filesystem transitions
-- explicit host-to-container filesystem mapping through bind mounts
+- explicit host-to-container filesystem mapping through bind mounts onto directory targets
 - hands-on knowledge of how container bootstrap code prepares an isolated runtime environment
 
 Current constraints:
@@ -80,6 +80,7 @@ Current constraints:
 - requires Linux and root privileges
 - expects a usable root filesystem that already contains the requested command
 - expects cgroup v2 to be available and writable under `/sys/fs/cgroup`
+- current bind-mount setup creates targets as directories, so file-target bind mounts are not supported yet
 - no user namespace isolation yet
 - no network namespace isolation yet
 - no OCI bundle or image support yet
@@ -130,7 +131,7 @@ sudo ./minictr run ./rootfs --hostname minictr -- /bin/sh
 Supported runtime flags currently include:
 
 - `--hostname <name>` to set the container hostname
-- `--bind <source>:<target>` to bind-mount a host path into an absolute path inside the container
+- `--bind <source>:<target>` to bind-mount a host path into an absolute directory path inside the container
 - `--pids <count>` to set `pids.max`
 - `--memory <bytes|K|M|G>` to set `memory.max`
 - `--cpu <cpus>` to set `cpu.max` relative to the runtime time unit
@@ -158,11 +159,13 @@ Startup is now explicitly synchronized across the parent/child boundary. The par
 
 Inside the PID namespace, `init` becomes PID 1 and the requested workload runs as its child. That is a deliberate reflection of the current implementation: `container.Init()` performs setup, starts the workload with `os.StartProcess(...)`, forwards common termination signals to its `os.Process` handle, reaps exited child processes while supervising, and exits with the workload's final status.
 
-Bind mount validation is strict: the flag value must be in `source:target` format, neither side may be empty, and the target must be an absolute container path such as `/data`.
+Bind mount parsing is split across two stages. During flag parsing, `--bind` values must be in `source:target` format and neither side may be empty. During `init`, each target is cleaned and must be an absolute container directory path such as `/data` before the mount is attempted.
 
 Resource limits are applied through a dedicated cgroup created under `/sys/fs/cgroup`, the child PID is added after `Start()`, and the cgroup is removed after the workload exits.
 
-Runtime flag validation is also enforced before startup: `--bind` must be valid `source:target`, bind targets must be absolute container paths, and `--pids`, `--memory`, and `--cpu` must not be negative. The memory parser accepts `K`, `M`, and `G` suffixes and rejects oversized values.
+Runtime flag validation is also enforced before startup for numeric and structural checks: `--bind` must be valid `source:target`, and `--pids`, `--memory`, and `--cpu` must not be negative. The memory parser accepts `K`, `M`, and `G` suffixes and rejects oversized values. Absolute bind-target validation happens later in `init`, just before mount setup.
+
+The current bind-mount implementation always creates the destination with `mkdir -p` semantics under the selected rootfs before calling `mount(MS_BIND|MS_REC)`, so the documented and tested path today is directory-oriented bind mounting.
 
 ## Next Stage
 

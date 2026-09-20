@@ -101,7 +101,7 @@ Supported runtime flags currently include:
 
 `--bind` may be provided multiple times.
 
-The bind-mount parser rejects invalid values early. The flag must contain a colon, both source and target must be non-empty, and the target must later resolve to an absolute container path.
+The bind-mount parser rejects invalid values early. The flag must contain a colon, and both source and target must be non-empty. Absolute target-path validation happens later inside `init`, immediately before bind setup.
 
 The memory flag accepts raw bytes or `K`, `M`, and `G` suffixes. The CPU flag is converted into the runtime's internal cgroup time unit before being written to `cpu.max`.
 
@@ -160,9 +160,11 @@ Inside the child process, `init` receives the already-parsed config and performs
 15. call `wait4()` in a loop to reap child exits while supervising
 16. exit with the main workload's exit code or signal-derived status
 
-That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup, mount propagation is made private before additional bind mounts are added, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup, mount propagation is made private before additional bind mounts are added, absolute bind-target validation happens in the same slice that performs the mounts, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
 
 For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
+
+Because the current code always creates the destination with directory semantics, the supported and tested bind-mount path today is a host path mounted onto a directory target inside the container rather than a file-to-file bind.
 
 ## Why Re-exec Still Matters
 
@@ -212,6 +214,7 @@ Current limitations include:
 - root privileges are required
 - the rootfs must already contain the command being executed
 - cgroup v2 must be available and writable under `/sys/fs/cgroup`
+- bind targets are created as directories, so file-target binds are not supported yet
 - no user namespaces yet
 - no network namespaces yet
 - no OCI bundle or image workflow yet
