@@ -4,17 +4,18 @@ This document started as the Stage 1 process-exec note, but it now reflects the 
 
 The core idea is still the same: the parent re-execs the current binary, and the child performs setup before starting the requested workload.
 
-Today, the overall runtime path includes config parsing, cgroup setup, namespace creation, a parent/child startup handshake for cgroup synchronization, hostname configuration, mount propagation changes, `pivot_root`, mounting `/proc`, and launching the workload as a child of `init`.
+Today, the overall runtime path includes config parsing, a privileged-only optional cgroup setup path, user-namespace-backed namespace creation, a parent/child startup handshake, hostname configuration, mount propagation changes, bind mounts, mounting `/proc`, `pivot_root`, and launching the workload as a child of `init`.
 
 ## Why This Matters
 
 This project is useful as Linux systems practice because it works directly with the kernel-facing mechanisms behind containers instead of abstracting them away. The current code exercises:
 
 - process bootstrap with re-exec
-- cgroup v2 setup and process membership management
+- optional cgroup v2 setup and process membership management in the privileged path
 - parent/child startup synchronization through an inherited pipe
 - Unix signal forwarding from the runtime to the child process
-- namespace creation via `clone` flags
+- namespace creation via `clone` flags, including a user namespace for rootless execution
+- user/group ID mapping so container UID 0 and GID 0 map back to the invoking host user and group
 - IPC namespace isolation in addition to UTS, PID, and mount isolation
 - mount namespace behavior and propagation control
 - bind mount preparation and host-to-container path mapping
@@ -27,7 +28,7 @@ This project is useful as Linux systems practice because it works directly with 
 Running:
 
 ```bash
-sudo ./minictr run ./rootfs --hostname demo --bind "$PWD":/workspace -- /bin/sh
+./minictr run ./rootfs --hostname demo --bind "$PWD":/workspace -- /bin/sh
 ```
 
 creates this sequence:
@@ -40,10 +41,10 @@ host PID 5000
 
         |
         | config.Parse(...)
-        | create cgroup
-        | write pids.max / memory.max / cpu.max
+        | create cgroup if limits were requested
+        | write pids.max / memory.max / cpu.max when configured
         | exec.Command("/proc/self/exe", ...)
-        | add child to cgroup
+        | add child to cgroup if present
         | write token to fd 3 sync pipe
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         v
@@ -58,8 +59,8 @@ host PID 5001
         | sethostname()
         | make mounts private
         | mountBinds()
-        | pivot_root()
         | mount /proc
+        | pivot_root()
         | os.StartProcess(...)
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         | wait4() and reap child exits
@@ -84,7 +85,7 @@ minictr run <rootfs> [runtime-options] -- <command> [command-args...]
 Example:
 
 ```bash
-sudo ./minictr run ./rootfs --hostname minictr --bind /home/bee/data:/data -- /bin/echo Hi
+./minictr run ./rootfs --hostname minictr --bind /home/bee/data:/data -- /bin/echo Hi
 ```
 
 The `--` separator is required so runtime flags can be distinguished from the workload command and its arguments.
@@ -101,6 +102,8 @@ Supported runtime flags currently include:
 
 `--bind` may be provided multiple times.
 
+When any of `--pids`, `--memory`, or `--cpu` are set, the parent creates a cgroup before the child is released from its startup wait. Without those flags, the runtime skips cgroup creation entirely. That cgroup-backed path is not part of the current rootless support.
+
 The bind-mount parser rejects invalid values early. The flag must contain a colon, and both source and target must be non-empty. Absolute target-path validation happens later inside `init`, immediately before bind setup.
 
 The memory flag accepts raw bytes or `K`, `M`, and `G` suffixes. The CPU flag is converted into the runtime's internal cgroup time unit before being written to `cpu.max`.
@@ -113,12 +116,13 @@ The parent process uses Go's `exec.Command(...)` to launch another copy of the c
 
 Before dispatching into `run` or `init`, `main()` parses the full runtime config once from the arguments after `<rootfs>`. That gives both code paths a shared view of hostname, bind mounts, and resource limits.
 
-When running in parent mode, the runtime also creates a cgroup under `/sys/fs/cgroup/minictr-<pid>` and applies any configured limits before starting the child.
+When running in parent mode, the runtime creates a cgroup under `/sys/fs/cgroup/minictr-<pid>` only when at least one resource-limit flag is set, and applies the requested limits before starting the child. In practice, that remains a privileged-only branch of the startup flow.
 
-The parent also creates a pipe and passes its read end to the child as file descriptor 3. That lets `init` block immediately after startup until the parent has successfully added the child PID to the cgroup.
+The parent also creates a pipe and passes its read end to the child as file descriptor 3. That lets `init` block immediately after startup until the parent has finished the parent-side startup work, including cgroup placement when one is being used in the privileged path.
 
 It configures the child with these namespace flags:
 
+- `CLONE_NEWUSER`
 - `CLONE_NEWUTS`
 - `CLONE_NEWPID`
 - `CLONE_NEWNS`
@@ -126,6 +130,7 @@ It configures the child with these namespace flags:
 
 This gives the child:
 
+- a user namespace where container UID 0 and GID 0 map to the invoking host user and group
 - an isolated hostname view
 - an isolated PID namespace
 - an isolated mount namespace
@@ -133,34 +138,36 @@ This gives the child:
 
 Standard input, output, and error are inherited from the parent so interactive commands still work.
 
-After `Start()`, the parent adds the child PID to the cgroup, writes a one-byte continue token into the sync pipe, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for `init` to exit, and removes the cgroup on cleanup.
+After `Start()`, the parent adds the child PID to the cgroup when one exists, writes a one-byte continue token into the sync pipe, forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the child, waits for `init` to exit, and removes the cgroup on cleanup.
 
 In the current implementation, the child receiving those signals is the `init` process inside the new PID namespace. That `init` process then forwards the same signal set to the workload subprocess it created, reaps child exits with `wait4()`, and exits with the workload's resulting status code.
 
 If cgroup membership fails after the child has been started, the runtime kills the child process and waits for it before returning the error.
 
+The user-namespace mapping is what keeps the rootless flow working across the re-exec. Inside the container, `id -u` and `id -g` report 0, while from the host's point of view the `init` process still runs under the invoking user's real UID and GID.
+
 ## What `init` Does
 
 Inside the child process, `init` receives the already-parsed config and performs container setup in this order:
 
-1. block on file descriptor 3 until the parent signals that cgroup setup is complete
+1. block on file descriptor 3 until the parent signals that parent-side startup work is complete
 2. set the container hostname
 3. mark mounts as private with `MS_PRIVATE | MS_REC`
 4. resolve each bind source to an absolute host path
 5. clean each bind target and verify it is absolute inside the container
 6. create the bind target directory under the selected rootfs
 7. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
-8. bind-mount the rootfs onto itself so it becomes a mount point
-9. call `pivot_root`
-10. change directory to `/`
-11. unmount and remove the old root
-12. mount `proc` at `/proc`
+8. mount `proc` at `/proc`
+9. bind-mount the rootfs onto itself so it becomes a mount point
+10. call `pivot_root`
+11. change directory to `/`
+12. unmount and remove the old root
 13. start the requested workload with `os.StartProcess(...)`
 14. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
 15. call `wait4()` in a loop to reap child exits while supervising
 16. exit with the main workload's exit code or signal-derived status
 
-That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup, mount propagation is made private before additional bind mounts are added, absolute bind-target validation happens in the same slice that performs the mounts, the bind targets must exist inside the future root filesystem, `pivot_root` requires the new root to already be a mount point, and `/proc` should be mounted only after the new root is active.
+That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup when one exists, mount propagation is made private before additional bind mounts are added, absolute bind-target validation happens in the same slice that performs the mounts, the bind targets must exist inside the future root filesystem, the current rootless flow mounts `proc` before `pivot_root`, and `pivot_root` still requires the new root to already be a mount point.
 
 For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
 
@@ -191,15 +198,16 @@ This is one of the central container-runtime patterns: create a controlled proce
 The current code already provides:
 
 - re-exec based parent/child architecture
+- user namespace creation with rootless UID/GID mapping
 - UTS namespace creation
 - PID namespace creation
 - IPC namespace creation
 - mount namespace creation
 - configurable hostname
 - repeated bind mounts with `--bind source:target`
-- cgroup v2 resource limits for PID count, memory, and CPU quota
+- cgroup v2 resource limits for PID count, memory, and CPU quota when those flags are requested in the privileged path
 - forwarding of common Linux termination signals across both runtime hops
-- startup synchronization so cgroup membership is established before container setup proceeds
+- startup synchronization so parent-side setup is finished before container setup proceeds
 - reaping of child exits while `init` supervises the workload
 - root filesystem activation through `pivot_root`
 - `/proc` mounted inside the new root filesystem
@@ -211,11 +219,11 @@ This is still a learning runtime, not a production container engine.
 
 Current limitations include:
 
-- root privileges are required
+- the selected rootfs must be writable by the invoking host user for rootless setup to succeed
 - the rootfs must already contain the command being executed
-- cgroup v2 must be available and writable under `/sys/fs/cgroup`
+- rootless execution does not currently support cgroup-backed resource limits
+- cgroup-backed resource limits still require writable cgroup v2 access under `/sys/fs/cgroup`, which keeps them in the privileged path for now
 - bind targets are created as directories, so file-target binds are not supported yet
-- no user namespaces yet
 - no network namespaces yet
 - no OCI bundle or image workflow yet
 
@@ -252,6 +260,6 @@ The remaining gap is broader subtree supervision. The code logs and reaps other 
 
 The current code has already moved past the original Stage 1 milestone. The next meaningful additions are:
 
-- user namespaces for safer isolation
 - network namespaces for connectivity control
+- rootless-compatible cgroup handling
 - more complete signal forwarding and lifecycle management across child processes

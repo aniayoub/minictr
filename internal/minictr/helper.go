@@ -3,6 +3,7 @@ package minictr
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -57,4 +58,13 @@ func AdjustStopSignal(err error) int {
 
 	return 1
 
+}
+
+func Dump(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("%s: %v", path, err)
+		return
+	}
+	log.Printf("%s:\n%s", path, b)
 }

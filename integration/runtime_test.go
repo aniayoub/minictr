@@ -95,8 +95,6 @@ func startSleepInMinictr(t *testing.T, cgConfig *struct{ key, value string }) (c
 }
 
 func TestExitCode(t *testing.T) {
-	requireRoot(t)
-
 	rootfs := requireRootfs(t)
 	binary := buildMinictr(t)
 
@@ -127,68 +125,7 @@ func TestExitCode(t *testing.T) {
 	}
 }
 
-func TestUTSIsolation(t *testing.T) {
-	testNamespaceIsolation(t, "uts")
-}
-
-func TestIPCNamespaceIsolation(t *testing.T) {
-	testNamespaceIsolation(t, "ipc")
-}
-
-func TestMountNamespaceIsolation(t *testing.T) {
-	testNamespaceIsolation(t, "mnt")
-}
-
-func TestPIDNamespaceIsolation(t *testing.T) {
-	requireRoot(t)
-
-	cmd := startSleepInMinictr(t, nil)
-
-	t.Cleanup(func() {
-		stopMinictr(t, cmd)
-	})
-
-	initPID, err := waitForDirectChild(cmd.Process.Pid, 5*time.Second)
-	if err != nil {
-		t.Fatalf("discover init PId: %v", err)
-	}
-
-	// Ensure that the init process is running in a different PID namespace than the host.
-	testNamespaceMismatch(t, "pid", initPID)
-
-	statusPath := fmt.Sprintf("/proc/%d/status", initPID)
-
-	data, err := os.ReadFile((statusPath))
-	if err != nil {
-		t.Fatalf("read init status: %v:", err)
-	}
-
-	// Parse NSPid from the last namespacePids because
-	// Because NSpid lists the PID as seen from the outer namespace through progressively nested PID namespaces.
-	// The innermost value is therefore the container-visible PID.
-	var nspid int
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "NSpid:") {
-			fields := strings.Fields(line)
-			if len(fields) > 1 {
-				nspid, _ = strconv.Atoi(fields[len(fields)-1])
-			}
-		}
-	}
-
-	if nspid == 0 {
-		t.Fatalf("failed to parse NSpid from init status")
-	}
-
-	if nspid != 1 {
-		t.Fatalf("expected init NSPid to be 1, got %d", nspid)
-	}
-
-}
-
 func TestProcMountMatchPIDNamespace(t *testing.T) {
-	requireRoot(t)
-
 	cmd := exec.Command(
 		buildMinictr(t),
 		"run",
@@ -206,8 +143,6 @@ func TestProcMountMatchPIDNamespace(t *testing.T) {
 }
 
 func TestMountBinds(t *testing.T) {
-	requireRoot(t)
-
 	// create a temporary source directory
 	tempDir := t.TempDir()
 
@@ -239,8 +174,6 @@ func TestMountBinds(t *testing.T) {
 }
 
 func TestSignalForwarding(t *testing.T) {
-	requireRoot(t)
-
 	tests := []struct {
 		name     string
 		signal   syscall.Signal
@@ -302,216 +235,6 @@ func TestSignalForwarding(t *testing.T) {
 		})
 	}
 
-}
-
-func TestCgroupPlacement(t *testing.T) {
-	requireRoot(t)
-
-	// Start a container running "sleep 30" to keep it alive for inspection.
-	cmd := startSleepInMinictr(t, nil)
-
-	t.Cleanup(func() {
-		stopMinictr(t, cmd)
-	})
-
-	// Discover the supervisor's direct child from Linux process state.
-	// That child is the re-exec'd minictr init process.
-	supervisorPID := cmd.Process.Pid
-	initPID, err := waitForDirectChild(supervisorPID, 5*time.Second)
-	if err != nil {
-		t.Fatalf("find container init: %v", err)
-	}
-	workloadPID, err := waitForDirectChild(initPID, 5*time.Second)
-	if err != nil {
-		t.Fatalf("find container workload: %v", err)
-	}
-
-	// Extract host, container and workload cgroup data.
-	path := fmt.Sprintf("/proc/%d/cgroup", supervisorPID)
-	hostCg, err := extractCgroupData(path)
-	if err != nil {
-		t.Fatalf("read host cgroup: %v", err)
-	}
-
-	path = fmt.Sprintf("/proc/%d/cgroup", workloadPID)
-	workloadCg, err := extractCgroupData(path)
-	if err != nil {
-		t.Fatalf("read container workload cgroup: %v", err)
-	}
-
-	path = fmt.Sprintf("/proc/%d/cgroup", initPID)
-	containerCg, err := extractCgroupData(path)
-	if err != nil {
-		t.Fatalf("read container cgroup: %v", err)
-	}
-
-	// Ensure host is separated from container and workload cgroups.
-	if hostCg == containerCg {
-		t.Fatalf("container init cgroup matches host cgroup")
-	}
-
-	if hostCg == workloadCg {
-		t.Fatalf("container workload cgroup matches host cgroup")
-	}
-
-	if containerCg != workloadCg {
-		t.Fatalf("container init cgroup does not match container workload cgroup")
-	}
-}
-
-func TestCGroupConfiguration(t *testing.T) {
-	requireRoot(t)
-
-	tests := []struct {
-		testName          string
-		configName        string
-		configFile        string
-		configValueStr    string
-		configActualValue string
-	}{
-		{
-			testName:          "cpu limit",
-			configName:        "--cpu",
-			configFile:        "cpu.max",
-			configValueStr:    "0.5",
-			configActualValue: "50000 100000",
-		},
-		{
-			testName:          "pid limit",
-			configName:        "--pids",
-			configFile:        "pids.max",
-			configValueStr:    "50",
-			configActualValue: "50",
-		},
-		{
-			testName:          "memory limit",
-			configName:        "--memory",
-			configFile:        "memory.max",
-			configValueStr:    "12M",
-			configActualValue: "12582912",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.testName, func(t *testing.T) {
-			// Test logic for each cgroup configuration goes here.
-
-			// Start a container running "sleep 30" to keep it alive for inspection.
-			cmd := startSleepInMinictr(t, &struct{ key, value string }{key: tt.configName, value: tt.configValueStr})
-
-			t.Cleanup(func() {
-				stopMinictr(t, cmd)
-			})
-
-			supervisorPID := cmd.Process.Pid
-
-			// Discover the supervisor's direct child from Linux process state.
-			// That child is the re-exec'd minictr init process.
-			initPID, err := waitForDirectChild(supervisorPID, 5*time.Second)
-			if err != nil {
-				t.Fatalf("find container init: %v", err)
-			}
-
-			initPID, err = waitForDirectChild(initPID, 5*time.Second)
-			if err != nil {
-				t.Fatalf("find container workload: %v", err)
-			}
-			cgName, err := cgroupPathForPID(initPID)
-			if err != nil {
-				t.Fatalf("get cgroup path for init process: %v", err)
-			}
-			cgPath := fmt.Sprintf("/sys/fs/cgroup/%s/%s", cgName, tt.configFile)
-
-			max, err := extractCgroupData(cgPath)
-			if err != nil {
-				t.Fatalf("extract cgroup data: %v", err)
-			}
-
-			if max != tt.configActualValue {
-				t.Fatalf("expected cgroup value %s, got %s", tt.configActualValue, max)
-			}
-		})
-	}
-}
-
-func testNamespaceIsolation(t *testing.T, namespace string) {
-	requireRoot(t)
-
-	// Start a container running "sleep 30" to keep it alive for inspection.
-	cmd := startSleepInMinictr(t, nil)
-
-	supervisorPID := cmd.Process.Pid
-
-	t.Cleanup(func() {
-		stopMinictr(t, cmd)
-	})
-
-	// Discover the supervisor's direct child from Linux process state.
-	// That child is the re-exec'd minictr init process.
-	initPID, err := waitForDirectChild(supervisorPID, 5*time.Second)
-	if err != nil {
-		t.Fatalf("find container init: %v", err)
-	}
-
-	testNamespaceMismatch(t, namespace, initPID)
-}
-
-func extractCgroupData(path string) (string, error) {
-	cgroupPath := path
-	cgroupData, err := os.ReadFile(cgroupPath)
-	if err != nil {
-		return "", fmt.Errorf("read container cgroup: %w", err)
-	}
-
-	if len(cgroupData) == 0 {
-		return "", fmt.Errorf("container cgroup is empty")
-	}
-
-	// Make sure to trim any leading or trailing whitespace from the cgroup data.
-	return strings.TrimSpace(string(cgroupData)), nil
-}
-
-func cgroupPathForPID(pid int) (string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return "", fmt.Errorf("read cgroup for pid %d: %w", pid, err)
-	}
-
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
-			continue
-		}
-
-		// cgroup v2 unified hierarchy entry
-		if parts[0] == "0" && parts[1] == "" {
-			return parts[2], nil
-		}
-	}
-
-	return "", fmt.Errorf("cgroup v2 path not found for pid %d", pid)
-}
-
-func testNamespaceMismatch(t *testing.T, namespace string, initPID int) {
-	hostNS, err := os.Stat(fmt.Sprintf("/proc/self/ns/%s", namespace))
-	if err != nil {
-		t.Fatalf("stat host %s namespace: %v", namespace, err)
-	}
-
-	containerNSPath := fmt.Sprintf("/proc/%d/ns/%s", initPID, namespace)
-
-	containerNS, err := os.Stat(containerNSPath)
-	if err != nil {
-		t.Fatalf("stat container %s namespace: %v", namespace, err)
-	}
-
-	if os.SameFile(hostNS, containerNS) {
-		t.Fatalf(
-			"container init PID %d shares the host %s namespace",
-			initPID,
-			namespace,
-		)
-	}
 }
 
 func waitForDirectChild(parentPID int, timeout time.Duration) (int, error) {

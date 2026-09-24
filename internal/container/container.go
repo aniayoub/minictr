@@ -13,7 +13,7 @@ import (
 )
 
 func Init(config *config.Config) (int, error) {
-	fmt.Println("Container init PID:", os.Getpid())
+	fmt.Println("Container init (PID, UID, EUID, GID, EGID):", os.Getpid(), os.Getuid(), os.Geteuid(), os.Getgid(), os.Getegid())
 
 	rootfs := config.Rootfs
 	cmd := config.Command[0]
@@ -35,11 +35,11 @@ func Init(config *config.Config) (int, error) {
 		return 1, err
 	}
 
-	if err := pivotRoot(rootfs); err != nil {
+	if err := mountProc(); err != nil {
 		return 1, err
 	}
 
-	if err := mountProc(); err != nil {
+	if err := pivotRoot(rootfs); err != nil {
 		return 1, err
 	}
 
@@ -246,6 +246,7 @@ func startProcess(commandName string, argv []string) (*os.Process, error) {
 	}
 	return proc, nil
 }
+
 func waitAndReap(proc *os.Process) (int, error) {
 	mainPid := proc.Pid
 

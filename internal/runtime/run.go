@@ -13,21 +13,27 @@ import (
 )
 
 func Run(runWith []string, cfg *config.Config) (retErr error) {
-	fmt.Println("Supervisor/Host Process ID:", os.Getpid())
+	fmt.Println("Supervisor/Host Process (ID, UID, GID):", os.Getpid(), os.Getuid(), os.Getgid())
 
 	cmd := createCommand(runWith)
 
-	cg, err := createCgroup(cfg)
+	var cg *cgroup.Cgroup
 
-	if err != nil {
-		return err
-	}
+	if cfg.PidsMax > 0 || cfg.MemoryMax > 0 || cfg.CpuMax > 0 {
+		cg, err := createCgroup(cfg)
 
-	defer func() {
-		if cleanupErr := cg.Remove(); cleanupErr != nil {
-			retErr = errors.Join(retErr, cleanupErr)
+		if err != nil {
+			return err
 		}
-	}()
+
+		defer func() {
+			if cleanupErr := cg.Remove(); cleanupErr != nil {
+				retErr = errors.Join(retErr, cleanupErr)
+			}
+		}()
+	} else {
+		cg = nil // Ensure cg is nil if no cgroup was created.
+	}
 
 	return runCommand(cmd, cg)
 }
@@ -89,16 +95,56 @@ func createCommand(runWith []string) *exec.Cmd {
 
 	// Ensure isolation by setting the appropriate clone flags for UTS, PID, and mount namespaces.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS |
+		Cloneflags: syscall.CLONE_NEWUSER |
+			syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWNS |
 			syscall.CLONE_NEWIPC,
+
+		UidMappings: []syscall.SysProcIDMap{
+			{
+				ContainerID: 0,
+				HostID:      os.Getuid(),
+				Size:        1,
+			},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{
+				ContainerID: 0,
+				HostID:      os.Getgid(),
+				Size:        1,
+			},
+		},
 	}
 
 	return cmd
 }
 
 func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
+
+	if err := setupCgroup(cmd, cg); err != nil {
+		return err
+	}
+
+	// Handle signals and forward them to the child process.
+	done := make(chan struct{})
+	signals := minictr.HandleLinuxSignals(cmd.Process, done)
+
+	// Ensure closing of the signals
+	// signals.Stop does not close the channel it only stops receiving signals.
+	defer func() {
+		signal.Stop(signals)
+		close(done)
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("wait for child process: %w", err)
+	}
+
+	return nil
+}
+
+func setupCgroup(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 	// Create a pipe to block the child from starting until the parent has added it to the cgroup.
 	readEnd, writeEnd, err := os.Pipe()
 	if err != nil {
@@ -117,15 +163,19 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 	readEnd.Close() // Close the read end in the parent process, as it's only needed in the child.
 
 	fmt.Println("Container Process ID:", cmd.Process.Pid)
+	if cg != nil {
 
-	if err := cg.AddProcess(cmd.Process.Pid); err != nil {
-		writeEnd.Close() // Close the write end before returning, as we won't be signaling the child to continue.
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return err
+		if err := cg.AddProcess(cmd.Process.Pid); err != nil {
+			writeEnd.Close() // Close the write end before returning, as we won't be signaling the child to continue.
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return err
+		}
+
+		fmt.Printf("cgroup setup completed and PID %d added to cgroup, signaling child to continue...\n", cmd.Process.Pid)
+	} else {
+		fmt.Printf("No cgroup setup, signaling child to continue...\n")
 	}
-
-	fmt.Printf("cgroup setup completed and PID %d added to cgroup, signaling child to continue...\n", cmd.Process.Pid)
 
 	// Signal the child process to continue runing the workload
 	_, err = writeEnd.Write([]byte{1})
@@ -135,21 +185,6 @@ func runCommand(cmd *exec.Cmd, cg *cgroup.Cgroup) error {
 		_ = cmd.Wait()
 		return fmt.Errorf("write to sync pipe: %w", err)
 	}
-
-	// Handle signals and forward them to the child process.
-	done := make(chan struct{})
-	signals := minictr.HandleLinuxSignals(cmd.Process, done)
-
-	// Ensure closing of the signals
-	// signals.Stop does not close the channel it only stops receiving signals.
-	defer func() {
-		signal.Stop(signals)
-		close(done)
-	}()
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("wait for child process: %w", err)
-	}
-
+	writeEnd.Close() // Close the write end after signaling the child to continue.
 	return nil
 }
