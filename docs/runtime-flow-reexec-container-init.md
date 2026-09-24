@@ -4,7 +4,7 @@ This document started as the Stage 1 process-exec note, but it now reflects the 
 
 The core idea is still the same: the parent re-execs the current binary, and the child performs setup before starting the requested workload.
 
-Today, the overall runtime path includes config parsing, a privileged-only optional cgroup setup path, user-namespace-backed namespace creation, a parent/child startup handshake, hostname configuration, mount propagation changes, bind mounts, mounting `/proc`, `pivot_root`, and launching the workload as a child of `init`.
+Today, the overall runtime path includes config parsing, a privileged-only optional cgroup setup path, user-namespace-backed namespace creation, a parent/child startup handshake, hostname configuration, mount propagation changes, bind mounts, `pivot_root`, mounting a fresh `/proc` in the new root before the old root is detached, and launching the workload as a child of `init`.
 
 ## Why This Matters
 
@@ -59,8 +59,9 @@ host PID 5001
         | sethostname()
         | make mounts private
         | mountBinds()
-        | mount /proc
         | pivot_root()
+        | mount /proc in the new root
+        | detach and remove old root
         | os.StartProcess(...)
         | forward SIGINT/SIGTERM/SIGHUP/SIGQUIT
         | wait4() and reap child exits
@@ -157,17 +158,18 @@ Inside the child process, `init` receives the already-parsed config and performs
 5. clean each bind target and verify it is absolute inside the container
 6. create the bind target directory under the selected rootfs
 7. bind-mount each host path into the rootfs with `MS_BIND | MS_REC`
-8. mount `proc` at `/proc`
-9. bind-mount the rootfs onto itself so it becomes a mount point
-10. call `pivot_root`
-11. change directory to `/`
-12. unmount and remove the old root
-13. start the requested workload with `os.StartProcess(...)`
-14. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
-15. call `wait4()` in a loop to reap child exits while supervising
-16. exit with the main workload's exit code or signal-derived status
+8. bind-mount the rootfs onto itself so it becomes a mount point
+9. call `pivot_root`
+10. change directory to `/`
+11. mount a fresh `proc` filesystem at `/proc` while the old root is still available at `/.pivot_root`
+12. unmount `/.pivot_root` with `MNT_DETACH`
+13. remove the old-root directory
+14. start the requested workload with `os.StartProcess(...)`
+15. forward `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to that workload through its `os.Process` handle
+16. call `wait4()` in a loop to reap child exits while supervising
+17. exit with the main workload's exit code or signal-derived status
 
-That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup when one exists, mount propagation is made private before additional bind mounts are added, absolute bind-target validation happens in the same slice that performs the mounts, the bind targets must exist inside the future root filesystem, the current rootless flow mounts `proc` before `pivot_root`, and `pivot_root` still requires the new root to already be a mount point.
+That ordering matters because the child must not begin container setup before the parent has attached it to the cgroup when one exists, mount propagation is made private before additional bind mounts are added, absolute bind-target validation happens in the same slice that performs the mounts, and bind targets must exist inside the future root filesystem before the root switch. `pivot_root` still requires the new root to already be a mount point. After the root switch and `chdir("/")`, the runtime mounts a fresh procfs at the new `/proc` while the old root is still present at `/.pivot_root`; only after that succeeds does it detach and remove the old root.
 
 For a bind such as `/home/bee/data:/data`, the runtime maps the container target `/data` to a host path under the rootfs, such as `./rootfs/data`, creates that directory if needed, and mounts the host source there before switching roots.
 

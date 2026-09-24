@@ -62,7 +62,7 @@ What is implemented now:
 - `init` waits for an explicit parent sync signal before beginning container setup, so parent-side startup coordination completes first
 - common Linux termination signals are forwarded from the parent runtime to `init`, and from `init` to the workload process
 - the selected root filesystem is bind-mounted and activated with `pivot_root`
-- `/proc` is mounted before `pivot_root` in the current rootless bootstrap path
+- after `pivot_root` switches into the new root, a fresh `/proc` is mounted before the old root is detached
 - `init` supervises the requested workload as a child process, reaps exited children while waiting, and returns the workload exit code
 
 What this demonstrates:
@@ -108,8 +108,9 @@ minictr run <rootfs> [runtime-options] -- <command> [args...]
                        +-- make mounts private
                        +-- create bind-mount targets under rootfs
                        +-- bind mount host paths into rootfs
-                       +-- mount /proc
                        +-- pivot_root into rootfs
+                       +-- mount a fresh /proc in the new root
+                       +-- detach and remove the old root
                        +-- start workload as a child process
                        +-- forward signals to workload
                        +-- reap child exits and return workload status

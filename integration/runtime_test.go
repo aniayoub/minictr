@@ -125,6 +125,22 @@ func TestExitCode(t *testing.T) {
 	}
 }
 
+func TestProcMounted(t *testing.T) {
+	cmd := exec.Command(
+		buildMinictr(t),
+		"run",
+		requireRootfs(t),
+		"--",
+		"/bin/sh",
+		"-c",
+		`grep -q " /proc " /proc/self/mountinfo`,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("proc not mounted: %v\n%s", err, output)
+	}
+}
 func TestProcMountMatchPIDNamespace(t *testing.T) {
 	cmd := exec.Command(
 		buildMinictr(t),

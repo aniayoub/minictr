@@ -222,3 +222,6 @@ new proc remains mounted at /proc
 Since the process is already inside the new PID namespace when the new proc filesystem is mounted, the new proc filesystem represents the processes visible from that PID namespace.
 
 After switching the sequence, the proc mount succeeds and the rootless container runs successfully.
+
+### False Success
+After double checking it seems that the running of minictr with a non-root does succeed, however a new bug is introduced. The mounting before the pivot works but the mounted proc is of the host. To fix this, we move down the proc mounting a few steps down after the pivot root to rootfs but before the detaching of the old one

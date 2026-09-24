@@ -35,10 +35,6 @@ func Init(config *config.Config) (int, error) {
 		return 1, err
 	}
 
-	if err := mountProc(); err != nil {
-		return 1, err
-	}
-
 	if err := pivotRoot(rootfs); err != nil {
 		return 1, err
 	}
@@ -169,6 +165,10 @@ func pivotRoot(rootfs string) error {
 	// We are now inside the new root filesystem.
 	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir to new root: %w", err)
+	}
+
+	if err := mountProc(); err != nil {
+		return fmt.Errorf("mount proc: %w", err)
 	}
 
 	// Remove access to the old host root.
