@@ -99,6 +99,7 @@ func createCommand(runWith []string) *exec.Cmd {
 			syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWNET |
 			syscall.CLONE_NEWIPC,
 
 		UidMappings: []syscall.SysProcIDMap{

@@ -23,6 +23,10 @@ func TestMountNamespaceIsolation(t *testing.T) {
 	testNamespaceIsolation(t, "mnt")
 }
 
+func TestNetworkNamespaceIsolation(t *testing.T) {
+	testNamespaceIsolation(t, "net")
+}
+
 func TestPIDNamespaceIsolation(t *testing.T) {
 
 	cmd := startSleepInMinictr(t, nil)
